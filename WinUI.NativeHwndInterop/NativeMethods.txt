@@ -1,0 +1,46 @@
+// HWND validation, placement, input and lifetime
+MSG
+WINDOW_STYLE
+WINDOW_EX_STYLE
+GetParent
+IsChild
+IsWindow
+GetWindowLong
+SetWindowLong
+GetWindowThreadProcessId
+GetFocus
+SetFocus
+EnableWindow
+GetKeyState
+SetLayeredWindowAttributes
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+GetCurrentThreadId
+GetNextDlgTabItem
+SendMessage
+SetWindowPos
+CreateRectRgn
+SetWindowRgn
+GetWindowRgnBox
+DeleteObject
+DwmSetWindowAttribute
+WM_KEYDOWN
+WM_KEYUP
+WM_SYSKEYDOWN
+WM_SYSKEYUP
+WM_CHAR
+WM_SYSCHAR
+WM_NULL
+WM_GETDLGCODE
+
+// Direct3D / DXGI
+D3D11CreateDevice
+D3D11_SDK_VERSION
+IDXGIDevice
+
+// DirectComposition
+DCompositionCreateDevice
+IDCompositionDevice
+IDCompositionVisual
+IDCompositionTarget

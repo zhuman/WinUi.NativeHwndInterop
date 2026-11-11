@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "WinUiHwndIntegration (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "WinUiHwndIntegration (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

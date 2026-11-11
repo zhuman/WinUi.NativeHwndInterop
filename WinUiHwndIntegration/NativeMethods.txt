@@ -1,0 +1,36 @@
+// Window creation / management
+CreateWindowEx
+DefWindowProc
+DestroyWindow
+GetModuleHandle
+LoadCursor
+IDC_ARROW
+RegisterClassEx
+UnregisterClass
+SetLayeredWindowAttributes
+SendMessage
+GetDpiForWindow
+SetTimer
+KillTimer
+WM_TIMER
+WM_DESTROY
+WM_PAINT
+WM_ERASEBKGND
+WM_COMMAND
+WM_SETFONT
+BN_CLICKED
+BS_PUSHBUTTON
+
+// GDI painting
+BeginPaint
+EndPaint
+GetClientRect
+FillRect
+CreateSolidBrush
+DeleteObject
+GetStockObject
+SelectObject
+SetBkMode
+SetTextColor
+DrawText
+InvalidateRect

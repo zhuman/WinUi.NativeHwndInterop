@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>WinUI.NativeHwndInterop.WinForms</RootNamespace>
+    <Platforms>x86;x64;ARM64</Platforms>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <PackageId>WinUI.NativeHwndInterop.WinForms</PackageId>
+    <Version>0.1.0-preview.1</Version>
+    <IsPackable>true</IsPackable>
+    <Description>Hosts Windows Forms controls inside WinUI using WinUI.NativeHwndInterop, with keyboard preprocessing, mnemonics and Tab-order hand-off between Windows Forms and XAML.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Implicit WinForms/System.Drawing usings collide with Microsoft.UI.Xaml type names. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.6-experimental" />
+    <ProjectReference Include="..\WinUI.NativeHwndInterop\WinUI.NativeHwndInterop.csproj" />
+  </ItemGroup>
+</Project>
