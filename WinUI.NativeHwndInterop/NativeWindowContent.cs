@@ -4,9 +4,13 @@ using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace WinUI.NativeHwndInterop;
 
-/// <summary>Basic dialog-style tab navigation for an existing same-thread native child window.</summary>
-/// <remarks>The optional release callback owns destruction. Without it this wrapper does not destroy the HWND.
-/// Use the framework-specific adapters instead for WinForms or WPF keyboard preprocessing.</remarks>
+/// <summary>
+/// Basic dialog-style tab navigation for an existing same-thread native child window.
+/// </summary>
+/// <remarks>
+/// The optional release callback owns destruction. Without it this wrapper does not destroy the HWND.
+/// Use the framework-specific adapters instead for WinForms or WPF keyboard preprocessing.
+/// </remarks>
 public sealed unsafe class NativeWindowContent : INativeHwndContent
 {
     private readonly Action? _release;

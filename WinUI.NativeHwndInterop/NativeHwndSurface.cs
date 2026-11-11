@@ -14,10 +14,14 @@ using WinRT;
 
 namespace WinUI.NativeHwndInterop;
 
-/// <summary>Redirects a layered child HWND into a WinUI composition visual without owning the HWND.</summary>
-/// <remarks>Create, access and dispose on the HWND's owning compositor thread. The caller must detach
+/// <summary>
+/// Redirects a layered child HWND into a WinUI composition visual without owning the HWND.
+/// </summary>
+/// <remarks>
+/// Create, access and dispose on the HWND's owning compositor thread. The caller must detach
 /// PlacementVisual before disposal and keep the HWND alive until disposal. PlacementVisual uses physical
-/// pixels; the caller controls its size, scale, placement and parent. No XAML element is required.</remarks>
+/// pixels; the caller controls its size, scale, placement and parent. No XAML element is required.
+/// </remarks>
 public sealed unsafe class NativeHwndSurface : INativeHwndSurface
 {
     private readonly uint _threadId;

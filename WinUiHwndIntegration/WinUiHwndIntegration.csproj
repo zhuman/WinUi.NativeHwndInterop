@@ -72,6 +72,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Remove="Pages\LibrarySamplesPage.xaml" />
+    <None Remove="Pages\MixedDpiPage.xaml" />
+    <Page Update="Pages\MixedDpiPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
     <Page Update="Pages\LibrarySamplesPage.xaml">
       <Generator>MSBuild:Compile</Generator>
     </Page>

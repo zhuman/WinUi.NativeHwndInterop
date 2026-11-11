@@ -50,6 +50,9 @@ namespace WinUiHwndIntegration
                     case "libraries":
                         NavFrame.Navigate(typeof(LibrarySamplesPage));
                         break;
+                    case "dpi":
+                        NavFrame.Navigate(typeof(MixedDpiPage));
+                        break;
                     default:
                         throw new InvalidOperationException($"Unknown navigation item tag: {item.Tag}");
                 }

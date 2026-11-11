@@ -17,12 +17,16 @@ using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace WinUI.NativeHwndInterop;
 
-/// <summary>Positions a redirected surface and its real HWND for a loaded XAML host.</summary>
-/// <remarks>All calls and events are UI-thread-affine. Tracking observes XAML layout, rectangular clips,
+/// <summary>
+/// Positions a redirected surface and its real HWND for a loaded XAML host.
+/// </summary>
+/// <remarks>
+/// All calls and events are UI-thread-affine. Tracking observes XAML layout, rectangular clips,
 /// scroll events and UI-thread TransformToVisual snapshots. Arbitrary composition animations, transforms,
 /// effects and off-thread manipulation cannot all be observed; use AlwaysCloaked when native input cannot
 /// be guaranteed to align. Polling stops on failure and reports Error (or throws if no handler is attached).
-/// Dispose and recreate the backend to resume tracking after a failure.</remarks>
+/// Dispose and recreate the backend to resume tracking after a failure.
+/// </remarks>
 internal sealed unsafe class HwndVisualHost : IDisposable
 {
     private const long SettleMilliseconds = 150;
@@ -32,7 +36,7 @@ internal sealed unsafe class HwndVisualHost : IDisposable
     private readonly HWND _hostedHwnd;
     private readonly uint _threadId;
     private readonly DispatcherQueueTimer _pollTimer;
-    private readonly List<ScrollViewer> _scrollViewers = [];
+    private readonly List<ScrollViewer> _scrollViewers = new();
     private HwndPlacement _applied = new(default, default, 1, "not placed");
     private bool _hasApplied;
     private bool _hasMotion;

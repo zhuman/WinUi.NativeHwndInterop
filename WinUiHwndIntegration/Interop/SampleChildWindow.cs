@@ -25,6 +25,7 @@ internal sealed unsafe class SampleChildWindow : IDisposable
     private HWND _button;
     private int _clickCount;
     private int _tickCount;
+    private readonly string? _dpiLabel;
 
     public HWND Handle { get; private set; }
 
@@ -32,8 +33,9 @@ internal sealed unsafe class SampleChildWindow : IDisposable
 
     public byte Alpha { get; private set; }
 
-    public SampleChildWindow(HWND parent)
+    public SampleChildWindow(HWND parent, string? dpiLabel = null)
     {
+        _dpiLabel = dpiLabel;
         EnsureClassRegistered();
 
         HINSTANCE hInstance = (HINSTANCE)(nint)PInvoke.GetModuleHandle((PCWSTR)null).Value;
@@ -65,7 +67,7 @@ internal sealed unsafe class SampleChildWindow : IDisposable
 
         float dpiScale = PInvoke.GetDpiForWindow(Handle) / 96f;
         fixed (char* buttonClass = "BUTTON")
-        fixed (char* buttonText = "Win32 button")
+        fixed (char* buttonText = dpiLabel is null ? "Win32 button" : $"{dpiLabel} clicks: 0")
         {
             _button = PInvoke.CreateWindowEx(
                 0,
@@ -155,8 +157,18 @@ internal sealed unsafe class SampleChildWindow : IDisposable
                         PInvoke.InvalidateRect(hwnd, (RECT?)null, false);
                         return (LRESULT)0;
 
+                    case PInvoke.WM_SIZE when window._dpiLabel is not null:
+                    case PInvoke.WM_DPICHANGED_AFTERPARENT when window._dpiLabel is not null:
+                        window.LayoutDpiButton();
+                        PInvoke.InvalidateRect(hwnd, (RECT?)null, false);
+                        break;
+
                     case PInvoke.WM_COMMAND when (wParam.Value & 0xFFFF) == ButtonId && ((wParam.Value >> 16) & 0xFFFF) == PInvoke.BN_CLICKED:
                         window._clickCount++;
+                        if (window._dpiLabel is not null)
+                        {
+                            PInvoke.SetWindowText(window._button, $"{window._dpiLabel} clicks: {window._clickCount}");
+                        }
                         PInvoke.InvalidateRect(hwnd, (RECT?)null, false);
                         return (LRESULT)0;
                 }
@@ -168,6 +180,18 @@ internal sealed unsafe class SampleChildWindow : IDisposable
         }
 
         return PInvoke.DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    private void LayoutDpiButton()
+    {
+        if (_button.IsNull) return;
+        float scale = PInvoke.GetDpiForWindow(Handle) / 96f;
+        if (!PInvoke.SetWindowPos(_button, HWND.Null, (int)(16 * scale), (int)(96 * scale),
+            (int)(140 * scale), (int)(32 * scale),
+            SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not resize the DPI diagnostic button.");
+        }
     }
 
     private void OnPaint()
@@ -190,10 +214,17 @@ internal sealed unsafe class SampleChildWindow : IDisposable
                 bottom = client.bottom - (int)(16 * dpiScale),
             };
 
-            string text =
-                $"Native Win32 HWND 0x{(nint)Handle.Value:X} (WS_CHILD | WS_EX_LAYERED)\n" +
-                $"Painted with GDI. Tick: {_tickCount}\n" +
-                $"Button clicks: {_clickCount}";
+            string text = _dpiLabel is null
+                ? $"Native Win32 HWND 0x{(nint)Handle.Value:X} (WS_CHILD | WS_EX_LAYERED)\n" +
+                    $"Painted with GDI. Tick: {_tickCount}\nButton clicks: {_clickCount}"
+                : $"{_dpiLabel}: {PInvoke.GetDpiForWindow(Handle)} DPI, client {client.Width}x{client.Height}\n" +
+                    $"Tick: {_tickCount}, clicks: {_clickCount}\nWhite ruler below = 96 local DIPs";
+            if (_dpiLabel is not null)
+            {
+                RECT ruler = new((int)(16 * dpiScale), (int)(148 * dpiScale),
+                    (int)(112 * dpiScale), (int)(164 * dpiScale));
+                PInvoke.FillRect(hdc, &ruler, new HBRUSH(PInvoke.GetStockObject(GET_STOCK_OBJECT_FLAGS.WHITE_BRUSH).Value));
+            }
 
             PInvoke.SetBkMode(hdc, BACKGROUND_MODE.TRANSPARENT);
             PInvoke.SetTextColor(hdc, Rgb(255, 255, 255));
