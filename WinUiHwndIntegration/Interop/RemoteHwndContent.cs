@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.UI.Dispatching;
 using WinUI.NativeHwndInterop;
+using WinUI.NativeHwndInterop.Processes;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
@@ -20,16 +21,21 @@ internal sealed class RemoteHwndContent : INativeHwndContent
     private readonly DispatcherQueue _dispatcher;
     private readonly Action<string> _status;
     private readonly NamedPipeServerStream _pipe;
-    private readonly Channel<PluginMessage> _outgoing = Channel.CreateUnbounded<PluginMessage>(new() { SingleReader = true, SingleWriter = true });
+    private readonly Channel<PluginMessage> _outgoing = Channel.CreateUnbounded<PluginMessage>(new() { SingleReader = true, SingleWriter = false });
+    private readonly object _supervisionGate = new();
+    private readonly ProcessJob _job;
+    private UiHeartbeatMonitor? _heartbeat;
+    private OffThreadWatchdog? _shutdownWatchdog;
+    private string? _supervisionFailure;
     private readonly CancellationTokenSource _stop = new();
     private readonly string _pipeName = $"WinUiHwndPlugin-{Guid.NewGuid():N}";
     private readonly Task _session;
     private Process? _process;
     private readonly PluginLaunchOptions _options;
     private readonly AppContainerLaunch? _sandbox;
-    private bool _ready;
-    private bool _stopping;
-    private bool _ended;
+    private volatile bool _ready;
+    private volatile bool _stopping;
+    private volatile bool _ended;
     private bool _cleanupComplete;
     private volatile bool _disposed;
     private (int Width, int Height) _lastSize;
@@ -44,6 +50,7 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         _options = options;
         try
         {
+            _job = new ProcessJob();
             string payload = Path.Combine(AppContext.BaseDirectory, "Plugin");
             if (!File.Exists(Path.Combine(payload, "WinUiHwndIntegration.Plugin.exe")))
                 throw new FileNotFoundException("The companion executable was not deployed with the sample.");
@@ -63,11 +70,12 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         {
             _pipe?.Dispose();
             _sandbox?.Dispose();
+            _job?.Dispose();
             _stop.Dispose();
             throw;
         }
         s_sessions.Add(this);
-        _session = RunAsync();
+        _session = Task.Run(RunAsync);
     }
 
     public static async Task ShutdownAllAsync()
@@ -114,6 +122,20 @@ internal sealed class RemoteHwndContent : INativeHwndContent
 
     public bool TranslateMessage(ref NativeMessage message) => false;
 
+    public void HangPluginUi()
+    {
+        if (!_ready || _stopping || _disposed) throw new InvalidOperationException("The plugin is not ready.");
+        Send(new(PluginMessageKind.HangUi));
+    }
+
+    private void TerminateForTimeout(string reason)
+    {
+        Interlocked.CompareExchange(ref _supervisionFailure, reason, null);
+        Trace.TraceWarning(reason);
+        _job.Terminate(0xDEAD);
+        _stop.Cancel();
+    }
+
     private void Send(PluginMessage message)
     {
         if (!_outgoing.Writer.TryWrite(message) && !_disposed)
@@ -127,6 +149,8 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         Task read = Task.CompletedTask;
         Task write = Task.CompletedTask;
         Task connect = Task.CompletedTask;
+        Task probes = Task.CompletedTask;
+        OffThreadWatchdog? startupWatchdog = null;
         string? failure = null;
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
         startup.CancelAfter(TimeSpan.FromSeconds(15));
@@ -136,14 +160,14 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                 Environment.ProcessId.ToString(CultureInfo.InvariantCulture), _pipeName, _options.Attachment.ToString(), _options.DpiAwareness.ToString(), _options.Framework.ToString()];
             if (_sandbox is not null)
             {
-                _process = _sandbox.Start(arguments);
+                _process = _sandbox.Start(arguments, _job);
             }
             else
             {
-                var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "Plugin", "WinUiHwndIntegration.Plugin.exe")) { UseShellExecute = false };
-                foreach (string argument in arguments) start.ArgumentList.Add(argument);
-                _process = Process.Start(start) ?? throw new InvalidOperationException("Could not launch the plugin process.");
+                _process = _job.StartProcess(Path.Combine(AppContext.BaseDirectory, "Plugin", "WinUiHwndIntegration.Plugin.exe"), arguments);
             }
+            startupWatchdog = new OffThreadWatchdog(TimeSpan.FromSeconds(15),
+                () => TerminateForTimeout("Plugin startup/attachment watchdog expired; its job was terminated."));
             string tokenStatus = AppContainerLaunch.VerifyToken(_process, _sandbox?.PackageSid);
             Task exit = _process.WaitForExitAsync();
             connect = _pipe.WaitForConnectionAsync(startup.Token);
@@ -168,6 +192,8 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                 {
                     if (_disposed || _stopping || _ended) throw new OperationCanceledException(_stop.Token);
                     AttachChild(child, pluginPid);
+                    if (_disposed || _stopping || _ended || startup.IsCancellationRequested)
+                        throw new OperationCanceledException(startup.Token);
                     Send(new(PluginMessageKind.Attached));
                     Resize();
                     _ready = true;
@@ -177,14 +203,25 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                 catch (Exception error) { attached.SetException(error); }
             })) throw new InvalidOperationException("The WinUI dispatcher is shutting down.");
             await attached.Task.WaitAsync(startup.Token);
+            startup.CancelAfter(Timeout.InfiniteTimeSpan);
+            await startupWatchdog.DisposeAsync();
+            lock (_supervisionGate)
+            {
+                if (_stopping || _disposed) throw new OperationCanceledException(_stop.Token);
+                _heartbeat = new UiHeartbeatMonitor(TimeSpan.FromSeconds(5),
+                    () => TerminateForTimeout("Plugin UI heartbeat timed out after 5 seconds; its job was terminated."));
+            }
             read = ReadMessagesAsync();
             write = WriteMessagesAsync();
-            Task finished = await Task.WhenAny(read, write, exit);
+            probes = SendHeartbeatsAsync();
+            Task finished = await Task.WhenAny(read, write, exit, probes, _heartbeat.Completion);
             await finished;
             if (!_disposed && !_stopping)
             {
                 throw new IOException(finished == exit ? $"Plugin exited unexpectedly (exit code {_process.ExitCode})." : "Plugin connection ended unexpectedly.");
             }
+            // Draining Shutdown into the pipe does not mean the remote UI has exited yet.
+            await exit.WaitAsync(_stop.Token);
         }
         catch (OperationCanceledException) when (_disposed || _stopping) { }
         catch (Exception error)
@@ -196,18 +233,27 @@ internal sealed class RemoteHwndContent : INativeHwndContent
             else
             {
                 Trace.TraceError($"Cross-process plugin failed: {error}");
-                failure = $"Plugin failed: {error.Message}";
+                string reason = Volatile.Read(ref _supervisionFailure) ??
+                    (error is OperationCanceledException && startup.IsCancellationRequested
+                        ? "Plugin startup/attachment timed out after 15 seconds."
+                        : error.Message);
+                failure = $"Plugin failed: {reason}";
                 Dispatch(() => _status(failure));
             }
         }
         finally
         {
-            _ended = true;
+            OffThreadWatchdog? shutdownWatchdog;
+            lock (_supervisionGate)
+            {
+                _ended = true;
+                shutdownWatchdog = _shutdownWatchdog;
+            }
             _ready = false;
             _stop.Cancel();
             _outgoing.Writer.TryComplete();
             _pipe.Dispose();
-            try { await Task.WhenAll(connect, read, write); }
+            try { await Task.WhenAll(connect, read, write, probes); }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
             catch (Exception error) { Trace.TraceInformation($"Plugin IPC ended: {error.Message}"); }
             if (_process is not null)
@@ -220,7 +266,7 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                         catch (TimeoutException)
                         {
                             Trace.TraceWarning($"Plugin PID {_process.Id} did not shut down; terminating the owned child process.");
-                            _process.Kill();
+                            _job.Terminate();
                             await _process.WaitForExitAsync();
                         }
                     }
@@ -232,6 +278,20 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                 }
                 finally { _process.Dispose(); }
             }
+            try
+            {
+                startupWatchdog?.Dispose();
+                _heartbeat?.Dispose();
+                shutdownWatchdog?.Dispose();
+                await Task.WhenAll(startupWatchdog?.Completion ?? Task.CompletedTask,
+                    _heartbeat?.Completion ?? Task.CompletedTask, shutdownWatchdog?.Completion ?? Task.CompletedTask);
+            }
+            catch (Exception error)
+            {
+                Trace.TraceError($"Plugin watchdog failed: {error}");
+                Dispatch(() => _status($"Plugin watchdog failed: {error.Message}"));
+            }
+            finally { _job.Dispose(); }
             try { if (_sandbox is not null) await Task.Run(_sandbox.Dispose); }
             catch (Exception error)
             {
@@ -286,6 +346,12 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         while (!_stop.IsCancellationRequested)
         {
             PluginMessage message = await PluginProtocol.ReadAsync(_pipe, _stop.Token);
+            if (message.Kind == PluginMessageKind.HeartbeatReply)
+            {
+                if (_heartbeat?.Acknowledge(message.A) != true && !_stopping)
+                    Trace.TraceWarning($"Ignored stale or late plugin heartbeat reply {message.A}.");
+                continue;
+            }
             if (message.Kind != PluginMessageKind.Leave || message.A is not (0 or 1))
                 throw new InvalidDataException("Unexpected plugin message.");
             Dispatch(() =>
@@ -295,6 +361,16 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                     FocusNavigationRequested?.Invoke(this, new NativeFocusNavigationEventArgs(message.A == 1));
             });
         }
+    }
+
+    private async Task SendHeartbeatsAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        do
+        {
+            if (!_stopping && _heartbeat!.TryCreateProbe(out long sequence))
+                Send(new(PluginMessageKind.Heartbeat, sequence));
+        } while (await timer.WaitForNextTickAsync(_stop.Token));
     }
 
     private async Task WriteMessagesAsync()
@@ -331,12 +407,18 @@ internal sealed class RemoteHwndContent : INativeHwndContent
 
     private void RequestStop()
     {
-        if (_stopping || _ended) return;
-        _stopping = true;
-        _ready = false;
-        Send(new(PluginMessageKind.Shutdown));
-        _outgoing.Writer.TryComplete();
-        // Do not wait on the UI thread: creating/destroying foreign child HWNDs may send it messages.
-        _stop.CancelAfter(TimeSpan.FromSeconds(2));
+        lock (_supervisionGate)
+        {
+            if (_stopping || _ended) return;
+            _stopping = true;
+            _ready = false;
+            _heartbeat?.Dispose();
+            _shutdownWatchdog = new OffThreadWatchdog(TimeSpan.FromSeconds(4),
+                () => TerminateForTimeout("Plugin shutdown watchdog expired; its job was terminated."));
+            Send(new(PluginMessageKind.Shutdown));
+            _outgoing.Writer.TryComplete();
+            // Do not wait on the UI thread: creating/destroying foreign child HWNDs may send it messages.
+            _stop.CancelAfter(TimeSpan.FromSeconds(2));
+        }
     }
 }

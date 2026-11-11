@@ -9,6 +9,7 @@ using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.HiDpi;
+using WinUI.NativeHwndInterop.Processes;
 using Forms = System.Windows.Forms;
 
 namespace WinUiHwndIntegration.Interop;
@@ -63,6 +64,16 @@ internal static class ExternalChildProcess
         }
         if (!outgoing.Writer.TryWrite(new(PluginMessageKind.Ready, root.Handle.ToInt64(), Environment.ProcessId)))
             throw new IOException("Could not queue the plugin handshake.");
+        var heartbeat = new UiHeartbeatResponder(callback =>
+        {
+            if (root.IsDisposed || !root.IsHandleCreated) return false;
+            root.BeginInvoke(callback);
+            return true;
+        }, sequence =>
+        {
+            if (!outgoing.Writer.TryWrite(new(PluginMessageKind.HeartbeatReply, sequence)))
+                throw new IOException("Could not queue the UI heartbeat reply.");
+        });
         Task communication = Task.Run(CommunicateAsync);
         try
         {
@@ -126,6 +137,15 @@ internal static class ExternalChildProcess
                         if (!root.FocusContent(message.A == 1))
                             throw new InvalidOperationException("Could not transfer keyboard focus into the plugin.");
                     });
+                }
+                else if (message.Kind == PluginMessageKind.Heartbeat)
+                {
+                    if (!heartbeat.TryRespond(message.A))
+                        throw new InvalidOperationException("The plugin UI dispatcher rejected a heartbeat.");
+                }
+                else if (message.Kind == PluginMessageKind.HangUi)
+                {
+                    root.BeginInvoke(() => Thread.Sleep(Timeout.Infinite));
                 }
                 else if (message.Kind == PluginMessageKind.Shutdown)
                 {

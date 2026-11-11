@@ -36,6 +36,8 @@ InitializeProcThreadAttributeList
 UpdateProcThreadAttribute
 DeleteProcThreadAttributeList
 CreateProcess
+ResumeThread
+TerminateProcess
 CloseHandle
 OpenProcessToken
 GetTokenInformation

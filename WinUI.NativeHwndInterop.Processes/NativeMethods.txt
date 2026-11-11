@@ -1,0 +1,9 @@
+CreateJobObject
+SetInformationJobObject
+AssignProcessToJobObject
+TerminateJobObject
+CreateProcess
+ResumeThread
+TerminateProcess
+CloseHandle
+JOBOBJECT_EXTENDED_LIMIT_INFORMATION

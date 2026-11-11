@@ -10,6 +10,7 @@ using Windows.Win32.Foundation;
 using Windows.Win32.Security;
 using Windows.Win32.Security.Authorization;
 using Windows.Win32.System.Threading;
+using WinUI.NativeHwndInterop.Processes;
 
 namespace WinUiHwndIntegration.Interop;
 
@@ -96,7 +97,7 @@ internal sealed unsafe class AppContainerLaunch : IDisposable
         }
     }
 
-    public Process Start(IReadOnlyList<string> arguments)
+    public Process Start(IReadOnlyList<string> arguments, ProcessJob job)
     {
         nuint length = 0;
         PInvoke.InitializeProcThreadAttributeList(default, 1, 0, &length);
@@ -121,14 +122,25 @@ internal sealed unsafe class AppContainerLaunch : IDisposable
             fixed (char* directory = _payload)
             {
                 if (!PInvoke.CreateProcess(executable, commandLine, null, null, false,
-                    PROCESS_CREATION_FLAGS.EXTENDED_STARTUPINFO_PRESENT, null, directory, (STARTUPINFOW*)&startup, &info))
+                    PROCESS_CREATION_FLAGS.EXTENDED_STARTUPINFO_PRESENT | PROCESS_CREATION_FLAGS.CREATE_SUSPENDED, null, directory, (STARTUPINFOW*)&startup, &info))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "CreateProcess(AppContainer) failed; no unrestricted fallback was launched.");
             }
+            Process? process = null;
             try
             {
-                Process process = Process.GetProcessById((int)info.dwProcessId);
-                _ = process.Handle;
+                process = Process.GetProcessById((int)info.dwProcessId);
+                job.AssignProcess(process.SafeHandle);
+                if (PInvoke.ResumeThread(info.hThread) == uint.MaxValue)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not resume the job-assigned AppContainer process.");
                 return process;
+            }
+            catch (Exception launchError)
+            {
+                process?.Dispose();
+                if (!PInvoke.TerminateProcess(info.hProcess, 1))
+                    throw new AggregateException("AppContainer launch and suspended-process cleanup failed.", launchError,
+                        new Win32Exception(Marshal.GetLastPInvokeError()));
+                throw;
             }
             finally
             {

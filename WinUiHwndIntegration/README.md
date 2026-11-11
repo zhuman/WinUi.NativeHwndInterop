@@ -30,7 +30,19 @@ In WPF mode the remote `ContainerControl` contains an `ElementHost` and WPF `Hwn
 - **Direct child creation:** the companion creates its `WS_CHILD` directly beneath the supplied container.
 - **Broker SetParent:** the companion creates its child beneath an invisible, own-process parking window. The host verifies the pipe peer PID, child ownership, `WS_CHILD` style, parking-parent ownership, and matching DPI awareness before calling `SetParent` on the WinUI thread. It checks the resulting parent/DPI and acknowledges attachment before the companion shows its UI. HWND ownership remains with the companion.
 
-Both ends verify the pipe peer PID. A duplex asynchronous pipe carries the ready HWND/PID, attachment acknowledgement, container-local sizes, focus entry, Tab departure, startup errors, and shutdown. The companion runs its own WinForms message loop and processes its own input. Host code does not synchronously wait for remote creation or IPC; native HWND operations can still couple the processes.
+Both ends verify the pipe peer PID. A duplex asynchronous pipe carries the ready HWND/PID, attachment acknowledgement, container-local sizes, focus entry, Tab departure, startup errors, UI heartbeats, and shutdown. The companion runs its own WinForms message loop and processes its own input. The host's session/IPC work runs outside the WinUI synchronization context; native HWND operations can still couple the processes.
+
+### Process lifetime and hang detection
+
+The sample composes the framework-neutral [Processes library](../WinUI.NativeHwndInterop.Processes/README.md):
+
+- **`ProcessJob`** owns a kill-on-close Windows job. Both normal and AppContainer launches create the companion suspended, assign it to the job, then resume it. Assignment failure aborts launch; there is no uncontained fallback. Closing the host or terminating the job also terminates companion descendants that remain in the job.
+- **`OffThreadWatchdog`** uses its own background thread and a monotonic deadline. A 15-second startup/attachment watchdog and a 4-second shutdown watchdog can terminate the job without dispatching to WinUI. The shutdown path normally allows 2 seconds for cooperative exit before cleanup terminates an unresponsive process.
+- **`UiHeartbeatMonitor` / `UiHeartbeatResponder`** correlate one outstanding probe at a time. Probes run every second; replies are queued through the companion's actual UI dispatcher, not acknowledged by its IPC thread. Five seconds without a valid UI reply triggers job termination and a visible failure diagnosis. Probe transmission itself never refreshes the deadline.
+
+**Hang plugin UI (watchdog demo)** deliberately freezes the remote UI while leaving its IPC thread alive. The watchdog terminates the job and the page permits restarting. Intentional shutdown disarms runtime heartbeats; watchdog completion is observed before releasing the job.
+
+These are composable lifetime/liveness tools, not guaranteed hang isolation. Cross-process child HWNDs may share input queues, and native calls can still block the host UI. Timeouts count sleep/debug pauses; scheduler starvation can delay termination. A cooperative heartbeat is not proof against a malicious plugin. Native process creation itself is not bounded by the post-launch startup watchdog; use a separate supervisor process if the host must remain responsive under all circumstances.
 
 ### AppContainer option
 
@@ -56,6 +68,7 @@ The page opts into `ChildDpiAwareness` and `HwndDpiScalingMode.MatchNativeWindow
 - Compare **Redirected + input**, **Native only**, and **Redirected only (cloaked)**. The timer should keep updating while cloaked, proving that the visible image is redirected.
 - Resize the WinUI window; verify the companion follows it without double-scaling.
 - Stop/restart, navigate away/back, or terminate the companion in Task Manager. Unexpected exit is reported on the page; restarting should recover.
+- Click **Hang plugin UI (watchdog demo)**. The heartbeat failure should terminate the companion in approximately five seconds; restart to recover.
 - Change display scaling manually to investigate live DPI transitions. Those transitions have not yet been verified for these cross-process combinations.
 
 ### Measured results
@@ -70,6 +83,8 @@ On Windows 11, using an x64 process on ARM64 at 200% scaling, the following resu
 | AppContainer | Broker | Pass | Pass | Pass |
 
 Each passing combination verified foreign HWND ownership/parentage, matching DPI at the cross-process edge, typing exactly once, keyboard/button clicks, real mouse input, bidirectional Tab, visual/native button-edge alignment in both native and cloaked-redirection modes, changing screenshot pixels while cloaked, and exit-code-zero shutdown. Additional checks covered unaware AppContainer resizing, unexpected exit/restart, repeated navigation, rapid startup cancellation, actual profile/payload removal, and normal app-close cleanup. Existing Win32/WPF/WinForms and in-process mixed-DPI input checks also passed. WPF input verification used normal-duration key presses; zero-delay injected key sequences do not have the in-process adapter's keyboard preprocessing guarantees.
+
+Supervision verification covered healthy UI beyond the timeout and deliberate hangs for WinForms/WPF with normal tokens and brokered AppContainer, using unaware DPI. The job exited with the watchdog's `0xDEAD` code in approximately five seconds, reported a UI heartbeat timeout, and supported restart/graceful stop. A hung WPF AppContainer was also terminated while the host UI thread was temporarily suspended; resuming the host restored diagnostics and restart. Component checks verified descendant termination, kill-on-close after abrupt broker exit, concurrent reset/disposal, rejected stale/late replies, and observable callback failures. The full framework/DPI matrix and sandbox lifecycle checks were rerun with supervision enabled; no companion processes or temporary profiles remained.
 
 ### Boundaries
 

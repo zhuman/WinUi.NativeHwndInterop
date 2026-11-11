@@ -1,11 +1,13 @@
 # 🪟 WinUI.NativeHwndInterop
 
-Host native HWND content, WPF elements, and Windows Forms controls inside a WinUI (3)
-XAML layout. Reuse existing desktop UI alongside WinUI controls, with native mouse
+Have you ever wanted to host HWND content, WPF elements, or Windows Forms controls inside WinUI3 XAML? The WinUI framework itself only provides interop in the other direction out of the box - you can host WinUI inside of another window.
+
+This library provides native HWND content hosting, WPF elements, and Windows Forms controls inside WinUI
+XAML. Reuse existing desktop UI alongside WinUI controls, with native mouse
 input, keyboard preprocessing, and Tab/Shift+Tab focus hand-off. HWNDs participate in
 WinUI composition, including animations, transforms, and opacity.
 
-There are no undocumented APIs used, and no overhead for hosting the HWNDs. The hosting
+There are no undocumented APIs used (just one experimental WinAppSDK API), and no overhead for hosting the HWNDs. The hosting
 mechanism stitches together the HWND and XAML composition trees and normal child HWND
 input processing happens automatically.
 
@@ -17,9 +19,24 @@ currently built locally as `0.1.0-preview.1`; they have not been published to Nu
 ## ✨ Features
 
 * 🎨 **Full visual participation in WinUI composition** - Animate, scale, rotate, and fade the hosted HWND content.
-* 🖱️ **Mouse and pointer input follows the native HWND** - The hosted content receives mouse input directly, including hover, click, and drag events. HWND input doesn't participate in rotate or scale transforms, but this library does maintain the child HWND positions so that input mapping works properly.
+* 🖱️ **Mouse and pointer input follows the native HWND** - The hosted content receives mouse input directly, including hover, click, and drag events. HWND input doesn't participate in rotate or scale transforms, but this library does maintain the child HWND positions so that input mapping works properly. HWNDs can be optionally clipped by the framework automatically to prevent some of the airspace issues.
 * 🖥️ **Mixed-mode DPI support** - The hosting control can be created in a different DPI context than the hosted HWND. The library provides opt-in awareness and scaling modes to support mixed-DPI hosting scenarios. This enables supporting old HWND-based plugins that don't support modern DPI scaling.
 * ⌨️ **Keyboard input preprocessing and focus hand-off** - The library provides a keyboard bridge for WPF and Windows Forms content, allowing accelerators, mnemonics, and Tab/Shift+Tab focus traversal to work seamlessly between the hosted content and WinUI controls.
+* 🔌 **Cross-process hosting for plugins** - Host WinForms or WPF UI from a cooperative plugin process, including sandboxed AppContainer processes using broker-performed parenting. The sample demonstrates the integration; composable process jobs, watchdogs, and UI heartbeats provide lifetime management and hang detection. Cross-process HWND parenting still couples input queues and is not a complete isolation boundary.
+
+## ❓ Q&A
+
+### When should I use this?
+
+It's clear that hosting HWNDs is not the preferred approach for anyone. If you are building a new plugin model, you should build it with Direct3D, Composition APIs, and input redirection. However there are many existing HWND plugin models that apps are stuck with. Rather than forcing you into WinUI interop inside of an older, clankier UI framework, this library lets you build your app as WinUI-first and still adopt HWND-based plugins when it's absolutely needed.
+
+### What is the difference between this and the WinForms/WPF + XAML Islands?
+
+Your main window can be natively WinUI3-based, including all of the titlebar functionality. For applications where HWND content is rare or only a small portion of the UI, this library can lead to a much cleaner codebase.
+
+### Does this really solve the airspace problem with hosting HWNDs?
+
+Visually, yes 100%. The hosted HWND content is redirected into a DirectComposition visual and participates in the WinUI composition tree. However, the native HWND still receives mouse input directly, so if you have a rotated or scaled HWND in the XAML tree, the mouse input will not be perfectly transformed to match the visual. The library does maintain the child HWND positions so that input mapping works properly 99% of the time, but it does not provide a complete solution for all input airspace issues. Clipping of the input does not follow 100% with XAML content rules, so this library works best when your HWND content is *usually* unoccluded. It can still participate in transition animations and other temporary visual states just fine though.
 
 ## 📦 Libraries
 
@@ -28,10 +45,12 @@ currently built locally as `0.1.0-preview.1`; they have not been published to Nu
 | [WinUI.NativeHwndInterop](WinUI.NativeHwndInterop/README.md) | Host a native child HWND with `NativeHwndHost`, or integrate directly with composition using `INativeHwndSurface` / `NativeHwndSurface`. |
 | [WinUI.NativeHwndInterop.Wpf](WinUI.NativeHwndInterop.Wpf/README.md) | Host a WPF `FrameworkElement` with `WpfHwndHost`. |
 | [WinUI.NativeHwndInterop.WinForms](WinUI.NativeHwndInterop.WinForms/README.md) | Host a Windows Forms `Control` with `WinFormsHwndHost`. |
+| [WinUI.NativeHwndInterop.Processes](WinUI.NativeHwndInterop.Processes/README.md) | Helper classes for cross-process UI plugins. Compose kill-on-close process jobs, dedicated-thread watchdogs, and UI-dispatched heartbeats for cooperative plugin models. |
 
 Both framework adapters depend on the core library. The core also provides
 opt-in mixed-DPI hosting scopes, child DPI-awareness selection, and automatic
-redirected-surface DPI compensation.
+redirected-surface DPI compensation. The optional Processes library is framework-neutral:
+it has no WinUI, WPF, or WinForms dependency and does not provide HWND hosting or IPC.
 
 ## ⚙️ How it works
 
@@ -122,7 +141,7 @@ composition usage, see the [core library guide](WinUI.NativeHwndInterop/README.m
 
 ## ⚠️ Limitations
 
-- Same-thread, same-process hosting only. Framework-specific behavior is not a
+- Framework-specific behavior is not a
   complete replacement for either framework's application or message loop.
 - Native hit-testing is separate from XAML: interactive overlays and transformed
   content need an explicit input policy. Arbitrary compositor animations cannot

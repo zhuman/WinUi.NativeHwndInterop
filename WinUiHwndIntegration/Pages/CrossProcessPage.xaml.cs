@@ -45,6 +45,7 @@ public sealed partial class CrossProcessPage : Page
         SelectedIndex = 0,
     };
     private readonly TextBlock _geometry = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+    private readonly Button _hang = new() { Content = "Hang plugin UI (watchdog demo)", IsEnabled = false };
     private RemoteHwndContent? _content;
 
     public CrossProcessPage()
@@ -67,8 +68,19 @@ public sealed partial class CrossProcessPage : Page
         var stop = new Button { Content = "Stop plugin" };
         start.Click += (_, _) => Start();
         stop.Click += (_, _) => Stop();
+        _hang.Click += (_, _) =>
+        {
+            _hang.IsEnabled = false;
+            _content?.HangPluginUi();
+        };
         buttons.Children.Add(start);
         buttons.Children.Add(stop);
+        buttons.Children.Add(_hang);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Each plugin runs in a kill-on-close job. UI heartbeats expire after 5 seconds; an off-thread watchdog terminates the job before UI cleanup. The hang demo deliberately blocks the companion UI thread. Deadlines include debugger pauses and system sleep; HWND coupling can still stall the host temporarily.",
+            TextWrapping = TextWrapping.Wrap,
+        });
         var options = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
         options.Children.Add(_attachment);
         options.Children.Add(_isolation);
@@ -116,7 +128,11 @@ public sealed partial class CrossProcessPage : Page
             RemoteHwndContent? instance = null;
             instance = new RemoteHwndContent(parent, DispatcherQueue, options, message =>
             {
-                if (ReferenceEquals(_content, instance)) _status.Text = message;
+                if (ReferenceEquals(_content, instance))
+                {
+                    _status.Text = message;
+                    _hang.IsEnabled = message.StartsWith("Connected:", StringComparison.Ordinal);
+                }
             });
             _content = instance;
             return instance;
@@ -125,6 +141,7 @@ public sealed partial class CrossProcessPage : Page
 
     private void Stop()
     {
+        _hang.IsEnabled = false;
         _host.ChildWindowFactory = null;
         _content = null;
         _status.Text = "Plugin stopped. Shutdown runs asynchronously; an unresponsive owned process is terminated after a bounded timeout.";

@@ -23,6 +23,7 @@
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <ProjectReference Include="..\WinUI.NativeHwndInterop\WinUI.NativeHwndInterop.csproj" />
+    <ProjectReference Include="..\WinUI.NativeHwndInterop.Processes\WinUI.NativeHwndInterop.Processes.csproj" />
     <ProjectReference Include="..\WinUI.NativeHwndInterop.Wpf\WinUI.NativeHwndInterop.Wpf.csproj" />
     <ProjectReference Include="..\WinUI.NativeHwndInterop.WinForms\WinUI.NativeHwndInterop.WinForms.csproj" />
     <ProjectReference Include="..\WinUiHwndIntegration.Plugin\WinUiHwndIntegration.Plugin.csproj" ReferenceOutputAssembly="false" Private="false" />
