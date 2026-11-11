@@ -25,7 +25,19 @@
     <ProjectReference Include="..\WinUI.NativeHwndInterop\WinUI.NativeHwndInterop.csproj" />
     <ProjectReference Include="..\WinUI.NativeHwndInterop.Wpf\WinUI.NativeHwndInterop.Wpf.csproj" />
     <ProjectReference Include="..\WinUI.NativeHwndInterop.WinForms\WinUI.NativeHwndInterop.WinForms.csproj" />
+    <ProjectReference Include="..\WinUiHwndIntegration.Plugin\WinUiHwndIntegration.Plugin.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
+
+  <Target Name="IncludePluginPayload" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolveProjectReferences">
+    <ItemGroup>
+      <_PluginPayload Include="..\WinUiHwndIntegration.Plugin\bin\$(Platform)\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*" Exclude="..\WinUiHwndIntegration.Plugin\bin\$(Platform)\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*.pdb;..\WinUiHwndIntegration.Plugin\bin\$(Platform)\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\*.runtimeconfig.dev.json" />
+      <Content Include="@(_PluginPayload)">
+        <Link>Plugin\%(_PluginPayload.Filename)%(_PluginPayload.Extension)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </Content>
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <Content Include="Assets\SplashScreen.scale-200.png" />

@@ -16,6 +16,7 @@ namespace WinUiHwndIntegration.Interop;
 /// <summary>Sample-only cooperative out-of-process content below an in-process layered container.</summary>
 internal sealed class RemoteHwndContent : INativeHwndContent
 {
+    private static readonly HashSet<RemoteHwndContent> s_sessions = [];
     private readonly DispatcherQueue _dispatcher;
     private readonly Action<string> _status;
     private readonly NamedPipeServerStream _pipe;
@@ -24,31 +25,56 @@ internal sealed class RemoteHwndContent : INativeHwndContent
     private readonly string _pipeName = $"WinUiHwndPlugin-{Guid.NewGuid():N}";
     private readonly Task _session;
     private Process? _process;
+    private readonly PluginLaunchOptions _options;
+    private readonly AppContainerLaunch? _sandbox;
     private bool _ready;
+    private bool _stopping;
     private bool _ended;
+    private bool _cleanupComplete;
     private volatile bool _disposed;
     private (int Width, int Height) _lastSize;
 
     public nint WindowHandle { get; }
     public event EventHandler<NativeFocusNavigationEventArgs>? FocusNavigationRequested;
 
-    public RemoteHwndContent(nint parent, DispatcherQueue dispatcher, Action<string> status)
+    public RemoteHwndContent(nint parent, DispatcherQueue dispatcher, PluginLaunchOptions options, Action<string> status)
     {
         _dispatcher = dispatcher;
         _status = status;
-        _pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        _options = options;
         try
         {
+            string payload = Path.Combine(AppContext.BaseDirectory, "Plugin");
+            if (!File.Exists(Path.Combine(payload, "WinUiHwndIntegration.Plugin.exe")))
+                throw new FileNotFoundException("The companion executable was not deployed with the sample.");
+            if (options.Isolation == PluginIsolation.AppContainer)
+            {
+                _sandbox = new AppContainerLaunch(payload);
+                _pipe = _sandbox.CreatePipe(_pipeName);
+            }
+            else
+            {
+                _pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance);
+            }
             WindowHandle = CreateContainer(parent);
         }
         catch
         {
-            _pipe.Dispose();
+            _pipe?.Dispose();
+            _sandbox?.Dispose();
             _stop.Dispose();
             throw;
         }
+        s_sessions.Add(this);
         _session = RunAsync();
+    }
+
+    public static async Task ShutdownAllAsync()
+    {
+        RemoteHwndContent[] sessions = [.. s_sessions];
+        foreach (var session in sessions) session.RequestStop();
+        await Task.WhenAll(sessions.Select(session => session._session));
     }
 
     private static unsafe nint CreateContainer(nint parent)
@@ -65,11 +91,18 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         return (nint)hwnd.Value;
     }
 
-    public void Resize(int width, int height)
+    public void Resize()
     {
-        if (_disposed || _ended || width <= 0 || height <= 0 || _lastSize == (width, height)) return;
-        _lastSize = (width, height);
-        Send(new(PluginMessageKind.Resize, width, height));
+        if (_disposed || _stopping || _ended) return;
+        RECT bounds;
+        using (DpiThreadScope.AwarenessForWindow(WindowHandle))
+        {
+            if (!PInvoke.GetClientRect((HWND)WindowHandle, out bounds))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not query plugin container client size.");
+        }
+        if (bounds.Width <= 0 || bounds.Height <= 0 || _lastSize == (bounds.Width, bounds.Height)) return;
+        _lastSize = (bounds.Width, bounds.Height);
+        Send(new(PluginMessageKind.Resize, bounds.Width, bounds.Height));
     }
 
     public bool Focus(bool forward)
@@ -94,19 +127,24 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         Task read = Task.CompletedTask;
         Task write = Task.CompletedTask;
         Task connect = Task.CompletedTask;
+        string? failure = null;
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
         startup.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
-            var start = new ProcessStartInfo(Environment.ProcessPath ?? throw new InvalidOperationException("Application executable path is unavailable."))
+            string[] arguments = [WindowHandle.ToInt64().ToString(CultureInfo.InvariantCulture),
+                Environment.ProcessId.ToString(CultureInfo.InvariantCulture), _pipeName, _options.Attachment.ToString(), _options.DpiAwareness.ToString(), _options.Framework.ToString()];
+            if (_sandbox is not null)
             {
-                UseShellExecute = false,
-            };
-            start.ArgumentList.Add("--external-child");
-            start.ArgumentList.Add(WindowHandle.ToInt64().ToString(CultureInfo.InvariantCulture));
-            start.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
-            start.ArgumentList.Add(_pipeName);
-            _process = Process.Start(start) ?? throw new InvalidOperationException("Could not launch the plugin process.");
+                _process = _sandbox.Start(arguments);
+            }
+            else
+            {
+                var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "Plugin", "WinUiHwndIntegration.Plugin.exe")) { UseShellExecute = false };
+                foreach (string argument in arguments) start.ArgumentList.Add(argument);
+                _process = Process.Start(start) ?? throw new InvalidOperationException("Could not launch the plugin process.");
+            }
+            string tokenStatus = AppContainerLaunch.VerifyToken(_process, _sandbox?.PackageSid);
             Task exit = _process.WaitForExitAsync();
             connect = _pipe.WaitForConnectionAsync(startup.Token);
             if (await Task.WhenAny(connect, exit) == exit)
@@ -116,51 +154,50 @@ internal sealed class RemoteHwndContent : INativeHwndContent
             await connect;
             VerifyClient(_process.Id);
             PluginMessage ready = await PluginProtocol.ReadAsync(_pipe, startup.Token);
+            if (ready.Kind == PluginMessageKind.Error)
+                throw new Win32Exception((int)ready.A,
+                    $"Plugin {(ready.B == 1 ? "parent validation" : "HWND creation")} failed (code 0x{ready.A:X}): {new Win32Exception((int)ready.A).Message}");
             if (ready.Kind != PluginMessageKind.Ready || ready.B != _process.Id)
-            {
                 throw new InvalidDataException("Plugin did not send a valid ready handshake.");
-            }
             nint child = checked((nint)ready.A);
             int pluginPid = _process.Id;
-            Dispatch(() =>
+            var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!_dispatcher.TryEnqueue(() =>
             {
-                if (_ended) return;
-                if (!IsExpectedChild(child, pluginPid))
+                try
                 {
-                    _status("Plugin failed: returned HWND does not belong to the launched process/container.");
-                    Dispose();
-                    return;
+                    if (_disposed || _stopping || _ended) throw new OperationCanceledException(_stop.Token);
+                    AttachChild(child, pluginPid);
+                    Send(new(PluginMessageKind.Attached));
+                    Resize();
+                    _ready = true;
+                    _status($"Connected: host PID {Environment.ProcessId}, plugin PID {pluginPid}, child HWND 0x{child:X}; {_options.Framework}; {_options.Attachment}; {tokenStatus}; {_options.DpiAwareness}, container/child DPI {PInvoke.GetDpiForWindow((HWND)WindowHandle)}/{PInvoke.GetDpiForWindow((HWND)child)}.");
+                    attached.SetResult();
                 }
-                _ready = true;
-                if (!PInvoke.GetClientRect((HWND)WindowHandle, out RECT bounds))
-                {
-                    _status($"Plugin sizing failed: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
-                    Dispose();
-                    return;
-                }
-                Resize(bounds.Width, bounds.Height);
-                _status($"Connected: host PID {Environment.ProcessId}, plugin PID {pluginPid}, child HWND 0x{child:X}. Native input runs in the plugin process.");
-            });
+                catch (Exception error) { attached.SetException(error); }
+            })) throw new InvalidOperationException("The WinUI dispatcher is shutting down.");
+            await attached.Task.WaitAsync(startup.Token);
             read = ReadMessagesAsync();
             write = WriteMessagesAsync();
             Task finished = await Task.WhenAny(read, write, exit);
             await finished;
-            if (!_disposed)
+            if (!_disposed && !_stopping)
             {
                 throw new IOException(finished == exit ? $"Plugin exited unexpectedly (exit code {_process.ExitCode})." : "Plugin connection ended unexpectedly.");
             }
         }
-        catch (OperationCanceledException) when (_disposed) { }
+        catch (OperationCanceledException) when (_disposed || _stopping) { }
         catch (Exception error)
         {
-            if (_disposed)
+            if (_disposed || _stopping)
             {
                 Trace.TraceInformation($"Plugin session ended during shutdown: {error}");
             }
             else
             {
                 Trace.TraceError($"Cross-process plugin failed: {error}");
-                Dispatch(() => _status($"Plugin failed: {error.Message}"));
+                failure = $"Plugin failed: {error.Message}";
+                Dispatch(() => _status(failure));
             }
         }
         finally
@@ -195,15 +232,20 @@ internal sealed class RemoteHwndContent : INativeHwndContent
                 }
                 finally { _process.Dispose(); }
             }
+            try { if (_sandbox is not null) await Task.Run(_sandbox.Dispose); }
+            catch (Exception error)
+            {
+                Trace.TraceError($"AppContainer cleanup failed: {error}");
+                Dispatch(() => _status($"{failure}\nAppContainer cleanup failed: {error.Message}"));
+            }
             Dispatch(() =>
             {
                 _ready = false;
-                if (PInvoke.IsWindow((HWND)WindowHandle) && !PInvoke.DestroyWindow((HWND)WindowHandle))
-                {
-                    _status($"Plugin container cleanup failed: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
-                }
+                _cleanupComplete = true;
+                s_sessions.Remove(this);
+                _stop.Dispose();
+                if (_disposed) DestroyContainer();
             }, allowDisposed: true);
-            _stop.Dispose();
         }
     }
 
@@ -215,11 +257,28 @@ internal sealed class RemoteHwndContent : INativeHwndContent
         if (pid != expectedPid) throw new InvalidDataException("Unexpected plugin pipe client process.");
     }
 
-    private unsafe bool IsExpectedChild(nint child, int expectedPid)
+    private unsafe void AttachChild(nint child, int expectedPid)
     {
         uint pid;
         PInvoke.GetWindowThreadProcessId((HWND)child, &pid);
-        return PInvoke.IsWindow((HWND)child) && PInvoke.GetParent((HWND)child) == (HWND)WindowHandle && pid == expectedPid;
+        if (!PInvoke.IsWindow((HWND)child) || pid != expectedPid ||
+            (PInvoke.GetWindowLong((HWND)child, WINDOW_LONG_PTR_INDEX.GWL_STYLE) & (int)WINDOW_STYLE.WS_CHILD) == 0)
+            throw new InvalidDataException("Plugin HWND is not a WS_CHILD owned by the launched process.");
+        if (!PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext((HWND)child), PInvoke.GetWindowDpiAwarenessContext((HWND)WindowHandle)))
+            throw new InvalidOperationException("Plugin DPI awareness does not match the local container; refusing a potentially resetting cross-process attachment.");
+        if (_options.Attachment == PluginAttachment.Broker)
+        {
+            HWND parking = PInvoke.GetParent((HWND)child);
+            PInvoke.GetWindowThreadProcessId(parking, &pid);
+            if (parking.IsNull || pid != expectedPid) throw new InvalidDataException("Plugin parking parent is not owned by the launched process.");
+            using var awareness = DpiThreadScope.AwarenessForWindow(WindowHandle);
+            if (PInvoke.SetParent((HWND)child, (HWND)WindowHandle).IsNull)
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Broker SetParent failed.");
+        }
+        if (PInvoke.GetParent((HWND)child) != (HWND)WindowHandle)
+            throw new InvalidDataException("Plugin HWND is not a direct child of the registered container.");
+        if (!PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext((HWND)child), PInvoke.GetWindowDpiAwarenessContext((HWND)WindowHandle)))
+            throw new InvalidOperationException("Plugin DPI awareness changed during attachment.");
     }
 
     private async Task ReadMessagesAsync()
@@ -250,16 +309,34 @@ internal sealed class RemoteHwndContent : INativeHwndContent
             Trace.TraceWarning("Plugin callback could not be dispatched because the WinUI dispatcher is shutting down.");
     }
 
+    private void DestroyContainer()
+    {
+        if (PInvoke.IsWindow((HWND)WindowHandle) && !PInvoke.DestroyWindow((HWND)WindowHandle))
+            _status($"Plugin container cleanup failed: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _ready = false;
-        if (_ended) return;
+        if (_cleanupComplete)
+        {
+            DestroyContainer();
+            return;
+        }
+        RequestStop();
+        PInvoke.ShowWindowAsync((HWND)WindowHandle, SHOW_WINDOW_CMD.SW_HIDE);
+    }
+
+    private void RequestStop()
+    {
+        if (_stopping || _ended) return;
+        _stopping = true;
+        _ready = false;
         Send(new(PluginMessageKind.Shutdown));
         _outgoing.Writer.TryComplete();
         // Do not wait on the UI thread: creating/destroying foreign child HWNDs may send it messages.
         _stop.CancelAfter(TimeSpan.FromSeconds(2));
-        PInvoke.ShowWindowAsync((HWND)WindowHandle, SHOW_WINDOW_CMD.SW_HIDE);
     }
 }

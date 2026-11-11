@@ -1,47 +1,80 @@
 # Sample application
 
-The navigation pages demonstrate native Win32, WPF, WinForms, mixed-DPI hosting, and an experimental cross-process child HWND.
+The navigation pages demonstrate native Win32, WPF, WinForms, mixed-DPI hosting, and an experimental cross-process child HWND. The experiments described here are sample-only; they do not change the reusable libraries' defaults or same-thread HWND validation.
 
 ## Cross-process experiment
 
-Build and run the sample normally, then select **Cross-process**. It starts automatically; **Start / restart plugin** and **Stop plugin** control its lifetime. The helper is another instance of the same deployed executable, not another WinUI window. No separate executable copy or package deployment step is required.
+Build and run the sample normally, then select **Cross-process**. It starts automatically; **Start / restart plugin** and **Stop plugin** control its lifetime. Choose framework, attachment, isolation, and DPI options, then restart to apply them.
 
-The host launches it with:
+The solution builds a standalone desktop companion, `WinUiHwndIntegration.Plugin`, and deploys its output into the sample's `Plugin` subdirectory. **Plugin framework** selects WinForms (the default) or WPF content. Both offer editable text boxes, a counter button, and a live render-tick label, all owned and rendered by the companion process. It does not initialize WinUI. Its internal command line is:
 
 ```text
-WinUiHwndIntegration.exe --external-child <container HWND in decimal> <host PID> <random pipe name>
+WinUiHwndIntegration.Plugin.exe <container HWND in decimal> <host PID> <random pipe name> <Direct|Broker> <PerMonitorV2|Unaware|SystemAware> <WinForms|Wpf>
 ```
 
-This mode is an internal sample protocol, not a supported plugin API. The HWND and pipe must belong to a live, cooperating host.
+This is not a supported plugin protocol. The HWND and pipe must belong to a live, cooperating host.
 
 ### Window and composition arrangement
 
 ```text
-WinUI top-level HWND                         host process
-  layered WS_CHILD container                 host process, WinUI thread
-	WS_CHILD WinForms ContainerControl       companion process, separate UI thread
+WinUI top-level HWND                         host process, PerMonitorV2 + MIXED hosting
+  layered WS_CHILD container                 host process, WinUI thread, selected DPI awareness
+	WS_CHILD WinForms ContainerControl       companion process, matching DPI awareness
 	  text boxes / button / ticking label    companion process
 ```
 
-The container is returned by a sample `INativeHwndContent` implementation. The existing library redirects **the local container and its descendant pixels** using `CreateSurfaceFromHwnd`, a DirectComposition visual, and `ContentExternalOutputLink`. This does not pass a foreign-process HWND directly to `NativeHwndSurface`; the libraries' same-thread validation remains unchanged.
+The container is returned by a sample `INativeHwndContent` implementation. The existing library redirects **the local container and its descendant pixels** using `CreateSurfaceFromHwnd`, a DirectComposition visual, and `ContentExternalOutputLink`. No foreign-process HWND is passed directly to `NativeHwndSurface`.
 
-A duplex, asynchronous, current-user-only named pipe carries the ready HWND/PID, physical sizes, focus entry, Tab departure and shutdown. Both ends verify the pipe peer's PID; the host checks the returned HWND's owner and direct parent. The companion creates its HWND directly with `WS_CHILD`, rather than reparenting a top-level window. It runs its own WinForms message loop and processes its own input. Host UI code does not wait synchronously for remote window creation or IPC.
+In WPF mode the remote `ContainerControl` contains an `ElementHost` and WPF `HwndSource`/visual tree instead of WinForms controls. This deliberately reuses the companion's HWND, message loop, and IPC lifetime plumbing; it is not an in-process WPF host or a separate WPF `Application`. Focus entry and basic Tab departure are cooperative; the richer in-process adapter integration is not replicated here.
+
+- **Direct child creation:** the companion creates its `WS_CHILD` directly beneath the supplied container.
+- **Broker SetParent:** the companion creates its child beneath an invisible, own-process parking window. The host verifies the pipe peer PID, child ownership, `WS_CHILD` style, parking-parent ownership, and matching DPI awareness before calling `SetParent` on the WinUI thread. It checks the resulting parent/DPI and acknowledges attachment before the companion shows its UI. HWND ownership remains with the companion.
+
+Both ends verify the pipe peer PID. A duplex asynchronous pipe carries the ready HWND/PID, attachment acknowledgement, container-local sizes, focus entry, Tab departure, startup errors, and shutdown. The companion runs its own WinForms message loop and processes its own input. Host code does not synchronously wait for remote creation or IPC; native HWND operations can still couple the processes.
+
+### AppContainer option
+
+**AppContainer (none requested)** creates a unique temporary profile and launches the companion using `SECURITY_CAPABILITIES` with an empty requested capability list. The host checks the actual token's AppContainer flag, exact package SID, and low integrity level; token capability SID count is also shown. Windows supplied one additional capability SID on the test machine despite the empty requested list, so this is not a claim that the effective token contains zero SIDs.
+
+Only the helper payload is staged into the profile, with read/execute access granted to that exact AppContainer SID. The repository and installed runtime ACLs are unchanged. The random pipe has a restricted DACL for the broker user, SYSTEM, and exact package SID, plus a low mandatory label. There is no unrestricted-process fallback, broad `ALL APPLICATION PACKAGES` grant, or capability request for networking or user libraries.
+
+Use **Broker SetParent** with this option. On the tested system, direct child creation under the higher-integrity host fails with `ERROR_ACCESS_DENIED`; broker attachment succeeds. **No `ChangeWindowMessageFilterEx` exceptions, global UIPI relaxation, or synthetic input relay were needed** for the verified mouse, typing, and Tab scenarios. Other controls/messages may need separate investigation; any future exception should be justified per message and applied only to the local container.
+
+Normal stop, navigation away, startup cancellation, and application close wait asynchronously for the owned process to exit before deleting its staged payload/profile. An unresponsive owned process is terminated after a bounded timeout. Pipe loss makes the companion exit even if its UI thread is unresponsive. Abrupt termination of the host can leave a temporary AppContainer profile/payload; this sample has no crash-recovery scavenger.
+
+### Mixed DPI
+
+The local container and companion both use the selected **PerMonitorV2**, **Unaware (96 DPI)**, or **System aware** mode. Mixed hosting occurs between the PerMonitorV2 WinUI top-level and the legacy container/subtree; the **cross-process parent/child edge deliberately has matching awareness**. The host checks awareness before and after broker attachment to avoid Windows' cross-process DPI-reset behavior ([Microsoft guidance](https://learn.microsoft.com/windows/win32/hidpi/high-dpi-desktop-application-development-on-windows#common-pitfalls-win32)).
+
+The page opts into `ChildDpiAwareness` and `HwndDpiScalingMode.MatchNativeWindow`. Resize messages use the container's own backing-pixel dimensions, not the WinUI host's physical dimensions. At 200% scaling, unaware windows remain at 96 DPI and redirected pixels use a 2.00 correction factor; PerMonitorV2/system-aware windows report 192 DPI with a 1.00 factor.
 
 ### Trying it
 
+- Select **WinForms** or **WPF** under **Plugin framework**, then restart. The companion's heading and connection status identify which framework is running.
 - Type in **Before plugin**, then Tab through the remote text box, button, final text box and **After plugin**. Shift+Tab traverses in reverse.
 - Click the remote button or press Space on it; its counter belongs to the companion process.
-- Compare **Redirected + input**, **Native only**, and **Redirected only (cloaked)**. The timer should continue updating even in the cloaked mode, proving that the visible image is redirected, not the native source window.
-- Resize the WinUI window; the companion receives the container's physical dimensions.
-- Stop/restart or navigate away and back. Cleanup closes the pipe, requests exit, and terminates only the owned companion if it does not exit within the shutdown timeout. Container destruction is deferred until the remote process has exited so the WinUI thread does not wait for cooperative remote destruction.
-- Terminate the companion in Task Manager. The page reports the broken connection; **Start / restart plugin** recovers. The companion also watches the host process so it exits if the host disappears.
+- Compare **Redirected + input**, **Native only**, and **Redirected only (cloaked)**. The timer should keep updating while cloaked, proving that the visible image is redirected.
+- Resize the WinUI window; verify the companion follows it without double-scaling.
+- Stop/restart, navigate away/back, or terminate the companion in Task Manager. Unexpected exit is reported on the page; restarting should recover.
+- Change display scaling manually to investigate live DPI transitions. Those transitions have not yet been verified for these cross-process combinations.
+
+### Measured results
+
+On Windows 11, using an x64 process on ARM64 at 200% scaling, the following results apply to **both WinForms and WPF**:
+
+| Isolation | Attachment | PerMonitorV2 | Unaware | System aware |
+|---|---|---|---|---|
+| Normal token | Direct | Pass | Pass | Pass |
+| Normal token | Broker | Pass | Pass | Pass |
+| AppContainer | Direct | Access denied | Access denied | Access denied |
+| AppContainer | Broker | Pass | Pass | Pass |
+
+Each passing combination verified foreign HWND ownership/parentage, matching DPI at the cross-process edge, typing exactly once, keyboard/button clicks, real mouse input, bidirectional Tab, visual/native button-edge alignment in both native and cloaked-redirection modes, changing screenshot pixels while cloaked, and exit-code-zero shutdown. Additional checks covered unaware AppContainer resizing, unexpected exit/restart, repeated navigation, rapid startup cancellation, actual profile/payload removal, and normal app-close cleanup. Existing Win32/WPF/WinForms and in-process mixed-DPI input checks also passed. WPF input verification used normal-duration key presses; zero-delay injected key sequences do not have the in-process adapter's keyboard preprocessing guarantees.
 
 ### Boundaries
 
-- **Trusted, cooperative processes only.** HWND parenting can implicitly attach input queues. Asynchronous IPC does not make cross-process `CreateWindowEx`, focus, layout or destruction immune to a hung remote UI thread. This is not a sandbox or a general fault-isolation boundary.
-- Both processes must run at compatible integrity levels, in the same interactive session/desktop. This sample requires a PerMonitorV2 parent and uses PerMonitorV2 in the companion; it does not combine the mixed-DPI and cross-process experiments. Windows can reset a process's DPI awareness when parenting across incompatible contexts ([Microsoft guidance](https://learn.microsoft.com/windows/win32/hidpi/high-dpi-desktop-application-development-on-windows#common-pitfalls-win32)).
-- Clipping regions are disabled here to isolate redirection from the known layered-window region drawing issue. Native input can extend beyond a scrolled/clipped XAML host. Keep the host fully visible when comparing input. This sample does not provide production clipping policy.
-- Focus and Tab are cooperative. The host's local keyboard hook cannot preprocess the companion's message queue. No general cross-process accelerator, IME, accessibility, wheel-routing, drag-and-drop or modality integration is promised.
-- Normal runtime startup is used in the companion; WinUI/composition engine initialization is skipped. System-composition compatibility remains unverified.
-
-On the development machine (Windows 11, x64 process on ARM64, 200% scaling), verification confirmed foreign HWND ownership/parentage, opaque live redirected pixels while cloaked, typing, real mouse clicks, forward/reverse Tab, resizing, exit-code-zero shutdown, navigation cleanup, and restart after unexpected companion exit.
+- **Cooperative UI only.** AppContainer provides resource restrictions, not a fully audited plugin sandbox or hang-isolation boundary. Cross-process parenting can implicitly attach input queues; async IPC does not make focus, layout, parenting, or destruction immune to a hung/malicious remote UI thread. The broker and protocol are not hardened against hostile plugins.
+- Both processes must use the same interactive session/desktop. Only the displayed modes and basic controls have been exercised; do not generalize the result to arbitrary integrity levels or mismatched cross-process DPI contexts.
+- Clipping regions are disabled to isolate redirection from the known layered-window region drawing issue. Native input can extend beyond a scrolled/clipped XAML host; keep it fully visible while testing.
+- Focus and Tab are cooperative. The local keyboard hook cannot preprocess the companion's queue. No general cross-process accelerator, IME, accessibility, wheel-routing, drag-and-drop, or modality integration is promised.
+- System-composition compatibility remains unverified.

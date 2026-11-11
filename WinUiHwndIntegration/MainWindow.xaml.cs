@@ -2,6 +2,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using WinUiHwndIntegration.Pages;
+using WinUiHwndIntegration.Interop;
 
 // To learn more about WinUI, the WinUI project structure,
 // and more about our project templates, see: http://aka.ms/winui-project-info.
@@ -10,6 +11,9 @@ namespace WinUiHwndIntegration
 {
     public sealed partial class MainWindow : Window
     {
+        private bool _closing;
+        private bool _canClose;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -19,6 +23,18 @@ namespace WinUiHwndIntegration
             SetTitleBar(AppTitleBar);
             AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
             AppWindow.SetIcon("Assets/AppIcon.ico");
+            AppWindow.Closing += OnAppWindowClosing;
+        }
+
+        private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+        {
+            if (_canClose) return;
+            args.Cancel = true;
+            if (_closing) return;
+            _closing = true;
+            await RemoteHwndContent.ShutdownAllAsync();
+            _canClose = true;
+            Close();
         }
 
         private void TitleBar_PaneToggleRequested(TitleBar sender, object args)

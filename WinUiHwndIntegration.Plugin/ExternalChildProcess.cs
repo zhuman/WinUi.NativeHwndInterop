@@ -13,35 +13,54 @@ using Forms = System.Windows.Forms;
 
 namespace WinUiHwndIntegration.Interop;
 
-/// <summary>The sample executable's companion mode; never starts WinUI or creates a top-level window.</summary>
+/// <summary>Standalone WinForms/WPF companion; never initializes WinUI.</summary>
 internal static class ExternalChildProcess
 {
     public static void Run(string[] args)
     {
-        if (args.Length != 4) throw new ArgumentException("Expected --external-child <parent HWND> <parent PID> <pipe name>.");
-        nint parent = checked((nint)long.Parse(args[1], CultureInfo.InvariantCulture));
-        int parentPid = int.Parse(args[2], CultureInfo.InvariantCulture);
-        VerifyParent(parent, parentPid);
-        using Process owner = Process.GetProcessById(parentPid);
-        _ = ExitWithParentAsync(owner);
-        Forms.Application.SetHighDpiMode(Forms.HighDpiMode.PerMonitorV2);
+        if (args.Length != 6) throw new ArgumentException("Expected <parent HWND> <parent PID> <pipe name> <attachment> <DPI awareness> <framework>.");
+        nint parent = checked((nint)long.Parse(args[0], CultureInfo.InvariantCulture));
+        int parentPid = int.Parse(args[1], CultureInfo.InvariantCulture);
+        var attachment = Enum.Parse<PluginAttachment>(args[3]);
+        var awareness = Enum.Parse<PluginDpiAwareness>(args[4]);
+        var framework = Enum.Parse<PluginFramework>(args[5]);
+        if (!Enum.IsDefined(attachment) || !Enum.IsDefined(awareness) || !Enum.IsDefined(framework)) throw new ArgumentException("Invalid plugin options.");
+        Forms.Application.SetHighDpiMode(awareness switch
+        {
+            PluginDpiAwareness.Unaware => Forms.HighDpiMode.DpiUnaware,
+            PluginDpiAwareness.SystemAware => Forms.HighDpiMode.SystemAware,
+            _ => Forms.HighDpiMode.PerMonitorV2,
+        });
         Forms.Application.EnableVisualStyles();
         Forms.Application.SetUnhandledExceptionMode(Forms.UnhandledExceptionMode.ThrowException);
 
-        using var pipe = new NamedPipeClientStream(".", args[3], PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var pipe = new NamedPipeClientStream(".", args[2], PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(15000);
         VerifyServer(pipe, parentPid);
-        VerifyParent(parent, parentPid);
+        // Pipe loss is the liveness signal; an AppContainer may not open the broker process.
         using var stop = new CancellationTokenSource();
         var outgoing = Channel.CreateUnbounded<PluginMessage>(new() { SingleReader = true, SingleWriter = true });
         using var context = new Forms.ApplicationContext();
-        using var root = new PluginControl(parent, forward =>
+        using var parking = new Forms.Form { ShowInTaskbar = false, Text = "Plugin parking window" };
+        using var root = new PluginControl(attachment == PluginAttachment.Broker ? parking.Handle : parent, framework, forward =>
         {
             if (!outgoing.Writer.TryWrite(new(PluginMessageKind.Leave, forward ? 1 : 0)))
                 throw new IOException("The host connection is closed.");
         });
-        _ = root.Handle;
-        root.PerformLayout();
+        int stage = 1;
+        try
+        {
+            VerifyParent(parent, parentPid);
+            stage = 2;
+            _ = root.Handle;
+            root.Visible = false;
+            root.PerformLayout();
+        }
+        catch (Exception error)
+        {
+            Task.Run(() => PluginProtocol.WriteAsync(pipe, new(PluginMessageKind.Error, error is Win32Exception native ? native.NativeErrorCode : error.HResult, stage), CancellationToken.None)).GetAwaiter().GetResult();
+            throw;
+        }
         if (!outgoing.Writer.TryWrite(new(PluginMessageKind.Ready, root.Handle.ToInt64(), Environment.ProcessId)))
             throw new IOException("Could not queue the plugin handshake.");
         Task communication = Task.Run(CommunicateAsync);
@@ -86,7 +105,17 @@ internal static class ExternalChildProcess
             while (true)
             {
                 PluginMessage message = await PluginProtocol.ReadAsync(pipe, stop.Token);
-                if (message.Kind == PluginMessageKind.Resize && message.A is > 0 and <= 32768 && message.B is > 0 and <= 32768)
+                if (message.Kind == PluginMessageKind.Attached)
+                {
+                    root.BeginInvoke(() =>
+                    {
+                        if (PInvoke.GetParent((HWND)root.Handle) != (HWND)parent)
+                            throw new InvalidOperationException("Broker did not attach the plugin to its registered parent.");
+                        root.Visible = true;
+                        root.PerformLayout();
+                    });
+                }
+                else if (message.Kind == PluginMessageKind.Resize && message.A is > 0 and <= 32768 && message.B is > 0 and <= 32768)
                 {
                     root.BeginInvoke(() => root.Size = new Size((int)message.A, (int)message.B));
                 }
@@ -94,7 +123,7 @@ internal static class ExternalChildProcess
                 {
                     root.BeginInvoke(() =>
                     {
-                        if (!root.SelectNextControl(null, message.A == 1, true, true, false) || root.ActiveControl?.Focus() != true)
+                        if (!root.FocusContent(message.A == 1))
                             throw new InvalidOperationException("Could not transfer keyboard focus into the plugin.");
                     });
                 }
@@ -114,20 +143,14 @@ internal static class ExternalChildProcess
         }
     }
 
-    private static async Task ExitWithParentAsync(Process owner)
-    {
-        await owner.WaitForExitAsync();
-        Environment.Exit(0);
-    }
-
     private static unsafe void VerifyParent(nint parent, int expectedPid)
     {
         uint pid;
         PInvoke.GetWindowThreadProcessId((HWND)parent, &pid);
         if (!PInvoke.IsWindow((HWND)parent) || pid != expectedPid || expectedPid == Environment.ProcessId)
             throw new ArgumentException("Parent HWND does not belong to the specified host process.");
-        if (!PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext((HWND)parent), DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
-            throw new InvalidOperationException("This cross-process experiment requires a PerMonitorV2 parent.");
+        if (!PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext((HWND)parent), PInvoke.GetThreadDpiAwarenessContext()))
+            throw new InvalidOperationException("Plugin and local container must have matching DPI awareness; the WinUI top-level may differ.");
     }
 
     private static unsafe void VerifyServer(NamedPipeClientStream pipe, int expectedPid)
@@ -143,17 +166,29 @@ internal static class ExternalChildProcess
         private readonly nint _parent;
         private readonly Action<bool> _leave;
         private readonly Forms.Timer _timer;
+        private readonly PluginWpfContent? _wpfContent;
+        private readonly System.Windows.Forms.Integration.ElementHost? _elementHost;
         private int _ticks;
         private int _clicks;
 
-        public PluginControl(nint parent, Action<bool> leave)
+        public PluginControl(nint parent, PluginFramework framework, Action<bool> leave)
         {
             _parent = parent;
             _leave = leave;
             BackColor = Color.FromArgb(230, 243, 255);
             AutoScaleMode = Forms.AutoScaleMode.None;
             Size = new Size(600, 230);
-            var title = new Forms.Label { Text = $"Out-of-process child - PID {Environment.ProcessId}", AutoSize = true, Location = new(12, 12) };
+            if (framework == PluginFramework.Wpf)
+            {
+                _wpfContent = new PluginWpfContent(leave);
+                _elementHost = new() { Dock = Forms.DockStyle.Fill, Child = _wpfContent, TabIndex = 0 };
+                Controls.Add(_elementHost);
+                _timer = new() { Interval = 250 };
+                _timer.Tick += (_, _) => _wpfContent.UpdateTicks(++_ticks);
+                _timer.Start();
+                return;
+            }
+            var title = new Forms.Label { Text = $"Out-of-process WinForms - PID {Environment.ProcessId}", AutoSize = true, Location = new(12, 12) };
             var first = new Forms.TextBox { AccessibleName = "Plugin first input", Text = "Type in the other process", Location = new(12, 45), Width = 260, TabIndex = 0 };
             var button = new Forms.Button { AccessibleName = "Plugin counter", Text = "Plugin clicks: 0", Location = new(12, 82), Size = new(200, 32), TabIndex = 1 };
             var last = new Forms.TextBox { AccessibleName = "Plugin last input", Text = "Tab here, then back to WinUI", Location = new(12, 128), Width = 300, TabIndex = 2 };
@@ -173,6 +208,22 @@ internal static class ExternalChildProcess
             _timer = new() { Interval = 250 };
             _timer.Tick += (_, _) => ticks.Text = $"Plugin render ticks: {++_ticks}; DPI {DeviceDpi}";
             _timer.Start();
+        }
+
+        public bool FocusContent(bool forward)
+        {
+            if (_elementHost is { } elementHost && _wpfContent is { } content)
+            {
+                elementHost.Focus();
+                if (System.Windows.PresentationSource.FromVisual(content) is not System.Windows.Interop.HwndSource source)
+                    throw new InvalidOperationException("The WPF plugin has no HWND presentation source.");
+                // Logical WPF focus alone can leave native keyboard focus in WinUI.
+                PInvoke.SetFocus((HWND)source.Handle);
+                if (PInvoke.GetFocus() != (HWND)source.Handle)
+                    throw new InvalidOperationException("Could not transfer native focus to the WPF plugin.");
+                return content.FocusEntry(forward);
+            }
+            return SelectNextControl(null, forward, true, true, false) && ActiveControl?.Focus() == true;
         }
 
         protected override Forms.CreateParams CreateParams

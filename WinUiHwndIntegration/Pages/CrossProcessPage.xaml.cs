@@ -20,6 +20,31 @@ public sealed partial class CrossProcessPage : Page
         ItemsSource = new[] { "Redirected + input (alpha 1)", "Native only (alpha 255)", "Redirected only (cloaked)" },
         SelectedIndex = 0,
     };
+    private readonly ComboBox _attachment = new()
+    {
+        Header = "Attachment (restart to apply)",
+        ItemsSource = new[] { "Direct child creation", "Broker SetParent" },
+        SelectedIndex = 0,
+    };
+    private readonly ComboBox _isolation = new()
+    {
+        Header = "Process isolation (restart to apply)",
+        ItemsSource = new[] { "Normal token", "AppContainer (none requested)" },
+        SelectedIndex = 0,
+    };
+    private readonly ComboBox _dpi = new()
+    {
+        Header = "Container + plugin DPI (restart to apply)",
+        ItemsSource = new[] { "PerMonitorV2", "Unaware (96 DPI)", "System aware" },
+        SelectedIndex = 0,
+    };
+    private readonly ComboBox _framework = new()
+    {
+        Header = "Plugin framework (restart to apply)",
+        ItemsSource = new[] { "WinForms", "WPF" },
+        SelectedIndex = 0,
+    };
+    private readonly TextBlock _geometry = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
     private RemoteHwndContent? _content;
 
     public CrossProcessPage()
@@ -29,12 +54,12 @@ public sealed partial class CrossProcessPage : Page
         panel.Children.Add(new TextBlock { Text = "Cross-process child HWND", FontSize = 24 });
         panel.Children.Add(new TextBlock
         {
-            Text = "A second instance of this executable runs in companion mode, without starting WinUI. It receives a local layered container HWND, creates its own WS_CHILD beneath it, and runs its own WinForms message loop. The library redirects the local container, including the remote subtree. Compare cloaked redirection with native-only rendering to check the captured pixels. Tab, Shift+Tab, size and shutdown use an asynchronous, same-user named pipe. Both processes use PerMonitorV2. Regions start disabled to isolate the experiment.",
+            Text = "The companion creates its own WS_CHILD containing WinForms or WPF UI. WPF uses ElementHost inside the companion; both frameworks and all their controls run out of process. Choose direct creation or a hidden parking parent followed by broker-performed SetParent. AppContainer requests no capabilities; Windows may add token SIDs, whose count is shown below. Direct AppContainer parenting is denied on the tested system; use broker attachment. For mixed DPI, the local container and plugin share the selected awareness beneath the mixed-hosting WinUI window; opt-in library scaling corrects redirected backing pixels. Restart to apply options.",
             TextWrapping = TextWrapping.Wrap,
         });
         panel.Children.Add(new TextBlock
         {
-            Text = "Trusted cooperative plugins only: cross-process parenting can couple Windows input queues. This is not a sandbox or protection against a hung plugin. The core library's same-thread HWND requirements are unchanged.",
+            Text = "Experimental, cooperative UI only. AppContainer reduces resource access, not cross-process HWND input-queue coupling or hangs. No unrestricted fallback is launched. Regions are disabled; keep the host fully visible when checking input. Core same-thread validation is unchanged.",
             TextWrapping = TextWrapping.Wrap,
         });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -44,9 +69,16 @@ public sealed partial class CrossProcessPage : Page
         stop.Click += (_, _) => Stop();
         buttons.Children.Add(start);
         buttons.Children.Add(stop);
+        var options = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
+        options.Children.Add(_attachment);
+        options.Children.Add(_isolation);
+        options.Children.Add(_dpi);
+        panel.Children.Add(options);
+        panel.Children.Add(_framework);
         panel.Children.Add(buttons);
         panel.Children.Add(_mode);
         panel.Children.Add(_status);
+        panel.Children.Add(_geometry);
         panel.Children.Add(new TextBox { Header = "Before plugin", PlaceholderText = "Tab into the other process" });
         panel.Children.Add(_host);
         panel.Children.Add(new TextBox { Header = "After plugin", PlaceholderText = "Shift+Tab into the other process" });
@@ -56,7 +88,9 @@ public sealed partial class CrossProcessPage : Page
         _host.StateChanged += (_, _) =>
         {
             ApplyOptions();
-            _content?.Resize(_host.Placement.Bounds.Width, _host.Placement.Bounds.Height);
+            _content?.Resize();
+            _geometry.Text = _host.WindowHandle == 0 ? "" :
+                $"XAML scale {_host.XamlRoot.RasterizationScale:F2}; source scale factor {_host.Surface?.NativeScaleFactor:F2}; physical host {_host.Placement.Bounds.Width}x{_host.Placement.Bounds.Height}px.";
         };
         _host.HostingFailed += (_, error) => _status.Text = $"Hosting failed: {error.Exception}";
         Loaded += (_, _) => Start();
@@ -66,11 +100,21 @@ public sealed partial class CrossProcessPage : Page
     private void Start()
     {
         Stop();
+        var options = new PluginLaunchOptions((PluginAttachment)_attachment.SelectedIndex,
+            (PluginIsolation)_isolation.SelectedIndex, (PluginDpiAwareness)_dpi.SelectedIndex,
+            (PluginFramework)_framework.SelectedIndex);
+        _host.ChildDpiAwareness = options.DpiAwareness switch
+        {
+            PluginDpiAwareness.Unaware => NativeDpiAwareness.Unaware,
+            PluginDpiAwareness.SystemAware => NativeDpiAwareness.SystemAware,
+            _ => NativeDpiAwareness.PerMonitorV2,
+        };
+        _host.DpiScalingMode = HwndDpiScalingMode.MatchNativeWindow;
         _status.Text = "Starting companion process...";
         _host.ChildWindowFactory = parent =>
         {
             RemoteHwndContent? instance = null;
-            instance = new RemoteHwndContent(parent, DispatcherQueue, message =>
+            instance = new RemoteHwndContent(parent, DispatcherQueue, options, message =>
             {
                 if (ReferenceEquals(_content, instance)) _status.Text = message;
             });

@@ -14,16 +14,8 @@ internal static class Program
         string logDirectory = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WinUiHwndIntegration");
         System.IO.Directory.CreateDirectory(logDirectory);
-        bool externalChild = args.FirstOrDefault() == "--external-child";
-        string logName = externalChild ? "plugin-error.log" : "startup-error.log";
         AppDomain.CurrentDomain.UnhandledException += (sender, error) =>
-            System.IO.File.WriteAllText(System.IO.Path.Combine(logDirectory, logName), error.ExceptionObject.ToString());
-
-        if (externalChild)
-        {
-            Interop.ExternalChildProcess.Run(args);
-            return;
-        }
+            System.IO.File.WriteAllText(System.IO.Path.Combine(logDirectory, "startup-error.log"), error.ExceptionObject.ToString());
 
         WinRT.ComWrappersSupport.InitializeComWrappers();
         bool system = args.Contains("--system-composition");

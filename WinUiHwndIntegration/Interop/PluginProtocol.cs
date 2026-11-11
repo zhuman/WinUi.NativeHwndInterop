@@ -3,7 +3,7 @@ using System.IO;
 
 namespace WinUiHwndIntegration.Interop;
 
-internal enum PluginMessageKind { Ready = 1, Resize, Focus, Leave, Shutdown }
+internal enum PluginMessageKind { Ready = 1, Resize, Focus, Leave, Shutdown, Attached, Error }
 
 internal readonly record struct PluginMessage(PluginMessageKind Kind, long A = 0, long B = 0);
 

@@ -1,0 +1,14 @@
+GetWindowThreadProcessId
+IsWindow
+GetParent
+GetWindowDpiAwarenessContext
+GetThreadDpiAwarenessContext
+SetThreadDpiAwarenessContext
+AreDpiAwarenessContextsEqual
+DPI_AWARENESS_CONTEXT_UNAWARE
+DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+GetNamedPipeServerProcessId
+GetDpiForWindow
+SetFocus
+GetFocus
