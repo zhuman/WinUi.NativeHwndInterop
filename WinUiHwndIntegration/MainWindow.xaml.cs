@@ -13,6 +13,7 @@ namespace WinUiHwndIntegration
         public MainWindow()
         {
             InitializeComponent();
+            AppTitleBar.Subtitle = ((App)Application.Current).CompositionStatus;
 
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(AppTitleBar);

@@ -16,10 +16,12 @@ namespace WinUiHwndIntegration
     public partial class App : Application
     {
         private Window? _window;
+        private readonly Microsoft.UI.Composition.CompositionEngineType? _requestedEngine = Program.RequestedEngine;
+
+        public string CompositionStatus { get; private set; } = "Composition engine not yet verified";
 
         /// <summary>
-        /// Initializes the singleton application object.  This is the first line of authored code
-        /// executed, and as such is the logical equivalent of main() or WinMain().
+        /// Initializes the application after Program has selected the composition engine.
         /// </summary>
         public App()
         {
@@ -32,7 +34,16 @@ namespace WinUiHwndIntegration
         /// <param name="args">Details about the launch request and process.</param>
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
         {
-            _window = new MainWindow();
+            var compositor = CompositionTarget.GetCompositorForCurrentThread();
+            var actualEngine = Microsoft.UI.Composition.CompositionEngine.GetForSystemEngine(compositor) is not null
+                ? Microsoft.UI.Composition.CompositionEngineType.System
+                : Microsoft.UI.Composition.CompositionEngineType.InProcess;
+            if (_requestedEngine is { } requested && actualEngine != requested)
+            {
+                throw new InvalidOperationException($"Requested {requested} composition, but XAML is using {actualEngine}.");
+            }
+            CompositionStatus = $"Composition: {actualEngine} (requested: {_requestedEngine?.ToString() ?? "Default"})";
+            _window = new MainWindow { Title = $"WinUiHwndIntegration - {CompositionStatus}" };
             _window.Activate();
         }
     }
