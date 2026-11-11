@@ -17,6 +17,15 @@ DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 GetWindowRect
 SetWindowPos
 SetWindowText
+ShowWindowAsync
+IsWindow
+GetParent
+GetFocus
+IsChild
+GetWindowThreadProcessId
+GetWindowDpiAwarenessContext
+GetNamedPipeClientProcessId
+GetNamedPipeServerProcessId
 WM_SIZE
 WM_DPICHANGED_AFTERPARENT
 SetTimer

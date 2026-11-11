@@ -53,6 +53,9 @@ namespace WinUiHwndIntegration
                     case "dpi":
                         NavFrame.Navigate(typeof(MixedDpiPage));
                         break;
+                    case "process":
+                        NavFrame.Navigate(typeof(CrossProcessPage));
+                        break;
                     default:
                         throw new InvalidOperationException($"Unknown navigation item tag: {item.Tag}");
                 }

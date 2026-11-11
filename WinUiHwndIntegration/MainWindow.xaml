@@ -55,6 +55,11 @@
                         <FontIcon Glyph="&#xE943;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="Cross-process" Tag="process">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE943;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="About" Tag="about">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xEA3A;" />
