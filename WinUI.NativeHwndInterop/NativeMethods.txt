@@ -17,6 +17,15 @@ SetWindowsHookEx
 UnhookWindowsHookEx
 CallNextHookEx
 GetCurrentThreadId
+GetDpiForWindow
+GetWindowDpiAwarenessContext
+AreDpiAwarenessContextsEqual
+SetThreadDpiAwarenessContext
+SetThreadDpiHostingBehavior
+GetWindowDpiHostingBehavior
+DPI_AWARENESS_CONTEXT_UNAWARE
+DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 GetNextDlgTabItem
 SendMessage
 SetWindowPos

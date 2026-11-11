@@ -23,6 +23,66 @@ Without a callback, `NativeWindowContent` borrows the HWND; the caller must keep
 alive until the host unloads and must not reuse it concurrently in another host.
 Use the WPF and WinForms adapter packages for those frameworks' keyboard handling.
 
+## Opt-in mixed-DPI hosting
+
+Enable mixed hosting **when the application creates its parent HWND**, not later
+when loading the control:
+
+```csharp
+using (DpiThreadScope.MixedHosting())
+{
+    window = new MainWindow();
+}
+```
+
+Then select creation awareness and visual compensation independently:
+
+```csharp
+var host = new NativeHwndHost
+{
+    ChildDpiAwareness = NativeDpiAwareness.Unaware,
+    DpiScalingMode = HwndDpiScalingMode.MatchNativeWindow,
+    ClipMode = HwndClipMode.None,
+    ChildWindowFactory = parent => CreatePluginContent(parent),
+};
+```
+
+- `ChildDpiAwareness` defaults to `NativeDpiAwareness.Inherit` (no thread override).
+  Alternatives are `Unaware`, `SystemAware`, and `PerMonitorV2`. The override spans
+  only `CreateContent`/`ChildWindowFactory`, not subsequent XAML/composition work.
+  Changing this property recreates the content, including calling its release
+  callback. A factory must create fresh content for the requested context; already
+  created HWNDs are not converted. Parent prerequisites and the resulting child
+  awareness are checked; failures use `HostingFailed`/`LastError`.
+- `DpiScalingMode` defaults to `HwndDpiScalingMode.None`. `MatchNativeWindow`
+  multiplies visual scale by parent-DPI/child-DPI and divides backing size by that
+  ratio, preserving the final host extent. It updates during placement tracking
+  and the regular poll even if layout is unchanged. Switching it does not recreate
+  content. It also works with `Inherit` and a caller-managed awareness scope.
+- `DpiThreadScope.Awareness(NativeDpiAwareness)` supports custom factories or native
+  plugin initialization. `AwarenessForWindow(hwnd)` uses a live HWND's exact context
+  for DPI-virtualized native queries. Scopes restore previous state, support nesting,
+  require reverse-order disposal on the creating thread, and must not span `await`,
+  a message loop, or unrelated XAML work. Native failures throw. No process-wide DPI
+  setting or existing parent HWND is changed.
+- Low-level `INativeHwndSurface.NativeScaleFactor` exposes the live parent/child
+  DPI ratio without modifying `PlacementVisual`. Query after DPI changes and apply
+  it in your own pixel-to-DIP scale and backing-size calculation. The surface and
+  both HWNDs must remain live; query on the owning thread.
+
+Windows' native bitmap scaling is not included in the redirected backing pixels.
+At 200% monitor scaling an unaware child's raw ruler is half-sized; compensation
+matches the native image and mouse coordinates. Live scale transitions worked in
+the sample's manual testing. Multi-monitor transitions, fractional scales, and
+complex third-party controls still need application validation. Framework adapters
+inherit these properties, but framework code or pre-existing managed HWNDs can
+have their own DPI policies; mixed-DPI WPF/WinForms content is not yet validated.
+
+Clipping is **independent** and is never silently changed by a DPI option.
+`ClipMode.None` is the recommended starting point for mixed-DPI experiments due
+to the layered-window region bug below. It does not constrain native input to a
+XAML viewport or overlay. Visual compensation does not fix that bug.
+
 ## Input and visual policy
 
 Defaults are `NativeAlpha = 1`, `CloakMode = NeverCloaked`, and

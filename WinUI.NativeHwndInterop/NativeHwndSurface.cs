@@ -19,8 +19,10 @@ namespace WinUI.NativeHwndInterop;
 /// </summary>
 /// <remarks>
 /// Create, access and dispose on the HWND's owning compositor thread. The caller must detach
-/// PlacementVisual before disposal and keep the HWND alive until disposal. PlacementVisual uses physical
-/// pixels; the caller controls its size, scale, placement and parent. No XAML element is required.
+/// PlacementVisual before disposal and keep the HWND alive until disposal. PlacementVisual uses source
+/// backing pixels, which can differ from displayed physical pixels for mixed-DPI windows; query
+/// NativeScaleFactor for compensation. The caller controls size, scale, placement and parent.
+/// No XAML element is required.
 /// </remarks>
 public sealed unsafe class NativeHwndSurface : INativeHwndSurface
 {
@@ -87,6 +89,24 @@ public sealed unsafe class NativeHwndSurface : INativeHwndSurface
     public Visual PlacementVisual
     {
         get { VerifyAccess(); return _outputLink!.PlacementVisual; }
+    }
+
+    /// <inheritdoc />
+    public double NativeScaleFactor
+    {
+        get
+        {
+            VerifyAccess();
+            HWND child = new(_windowHandle);
+            HWND parent = PInvoke.GetParent(child);
+            uint childDpi = PInvoke.GetDpiForWindow(child);
+            uint parentDpi = PInvoke.GetDpiForWindow(parent);
+            if (childDpi == 0 || parentDpi == 0)
+            {
+                throw new InvalidOperationException("The source HWND and its parent must remain live to query DPI scaling.");
+            }
+            return (double)parentDpi / childDpi;
+        }
     }
 
     private void VerifyAccess()

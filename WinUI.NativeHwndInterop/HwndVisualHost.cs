@@ -52,10 +52,14 @@ internal sealed unsafe class HwndVisualHost : IDisposable
     private bool _regionApplied;
     private HwndCloakMode _cloakMode;
     private HwndClipMode _clipMode;
+    private HwndDpiScalingMode _dpiScalingMode;
+    private double _appliedNativeScale;
 
-    public HwndVisualHost(FrameworkElement hostElement, nint hostedHwnd)
+    public HwndVisualHost(FrameworkElement hostElement, nint hostedHwnd, HwndDpiScalingMode dpiScalingMode)
     {
         ArgumentNullException.ThrowIfNull(hostElement);
+        if (!Enum.IsDefined(dpiScalingMode)) throw new ArgumentOutOfRangeException(nameof(dpiScalingMode));
+        _dpiScalingMode = dpiScalingMode;
         _hostElement = hostElement;
         _threadId = PInvoke.GetCurrentThreadId();
         if (!hostElement.DispatcherQueue.HasThreadAccess)
@@ -132,6 +136,18 @@ internal sealed unsafe class HwndVisualHost : IDisposable
             if (!Enum.IsDefined(value)) throw new ArgumentOutOfRangeException(nameof(value));
             _clipMode = value;
             Update();
+        }
+    }
+
+    public HwndDpiScalingMode DpiScalingMode
+    {
+        get => _dpiScalingMode;
+        set
+        {
+            VerifyAccess();
+            if (!Enum.IsDefined(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            _dpiScalingMode = value;
+            UpdateFromEvent();
         }
     }
 
@@ -223,6 +239,15 @@ internal sealed unsafe class HwndVisualHost : IDisposable
             }
             _applied = placement;
             _hasApplied = true;
+        }
+        // DPI can change without any XAML geometry change. Query after native placement so the
+        // HWND has reached the intended monitor before compensating its backing pixels.
+        double nativeScale = _dpiScalingMode == HwndDpiScalingMode.MatchNativeWindow ? Surface.NativeScaleFactor : 1;
+        if (changed || nativeScale != _appliedNativeScale)
+        {
+            ApplyVisualBounds(placement, nativeScale);
+            _appliedNativeScale = nativeScale;
+            changed = true;
         }
         if (_scrollActive && now - _lastScrollTick > ScrollTimeoutMilliseconds)
         {
@@ -343,11 +368,15 @@ internal sealed unsafe class HwndVisualHost : IDisposable
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "SetWindowPos failed.");
         }
-        Visual visual = Surface.PlacementVisual;
-        visual.Offset = Vector3.Zero;
-        visual.Scale = new Vector3((float)(1 / placement.Scale), (float)(1 / placement.Scale), 1);
-        visual.Size = new Vector2(bounds.Width, bounds.Height);
-    }
+        }
+
+        private void ApplyVisualBounds(HwndPlacement placement, double nativeScale)
+        {
+            Visual visual = Surface.PlacementVisual;
+            visual.Offset = Vector3.Zero;
+            visual.Scale = new Vector3((float)(nativeScale / placement.Scale), (float)(nativeScale / placement.Scale), 1);
+            visual.Size = new Vector2((float)(placement.Bounds.Width / nativeScale), (float)(placement.Bounds.Height / nativeScale));
+        }
 
     private bool ApplyCloak(bool cloak, string reason)
     {

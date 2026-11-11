@@ -43,7 +43,7 @@ namespace WinUiHwndIntegration
                 throw new InvalidOperationException($"Requested {requested} composition, but XAML is using {actualEngine}.");
             }
             CompositionStatus = $"Composition: {actualEngine} (requested: {_requestedEngine?.ToString() ?? "Default"})";
-            using (Interop.DpiThreadScope.MixedHosting())
+            using (WinUI.NativeHwndInterop.DpiThreadScope.MixedHosting())
             {
                 _window = new MainWindow { Title = $"WinUiHwndIntegration - {CompositionStatus}" };
             }

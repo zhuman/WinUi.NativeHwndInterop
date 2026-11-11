@@ -13,3 +13,8 @@ var host = new WpfHwndHost { Child = new System.Windows.Controls.TextBox() };
 - Tab/Shift+Tab leaving the WPF tab order (`OnNoMoreTabStops`) returns focus to XAML.
 - Not supported: a WPF `Application`/resources, arrow-key focus hand-off, wheel chaining, per-pixel transparency.
 - UI thread only.
+
+The inherited core `ChildDpiAwareness` and `DpiScalingMode` options are opt-in.
+See the core README for parent mixed-hosting prerequisites and clipping limits.
+These options do not override WPF's own DPI/layout policy; non-default awareness
+with WPF content requires separate validation.

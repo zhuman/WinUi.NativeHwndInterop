@@ -83,6 +83,40 @@ public unsafe class NativeHwndHost : Control
         set => SetValue(ClipModeProperty, value);
     }
 
+    public static readonly DependencyProperty ChildDpiAwarenessProperty = DependencyProperty.Register(
+        nameof(ChildDpiAwareness), typeof(NativeDpiAwareness), typeof(NativeHwndHost),
+        new PropertyMetadata(NativeDpiAwareness.Inherit, OnChildDpiAwarenessChanged));
+
+    /// <summary>Optional thread DPI override around CreateContent only. Changing it recreates content.
+    /// The caller must enable mixed hosting when creating the parent HWND for a different child context.</summary>
+    public NativeDpiAwareness ChildDpiAwareness
+    {
+        get => (NativeDpiAwareness)GetValue(ChildDpiAwarenessProperty);
+        set => SetValue(ChildDpiAwarenessProperty, value);
+    }
+
+    public static readonly DependencyProperty DpiScalingModeProperty = DependencyProperty.Register(
+        nameof(DpiScalingMode), typeof(HwndDpiScalingMode), typeof(NativeHwndHost),
+        new PropertyMetadata(HwndDpiScalingMode.None, OnOptionsChanged));
+
+    /// <summary>Opt-in compensation matching the native parent/child DPI ratio. Independent of clipping
+    /// and creation awareness; also works for HWNDs created by a caller-managed factory.</summary>
+    public HwndDpiScalingMode DpiScalingMode
+    {
+        get => (HwndDpiScalingMode)GetValue(DpiScalingModeProperty);
+        set => SetValue(DpiScalingModeProperty, value);
+    }
+
+    private static void OnChildDpiAwarenessChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        var control = (NativeHwndHost)sender;
+        if (!Enum.IsDefined(control.ChildDpiAwareness))
+        {
+            throw new ArgumentOutOfRangeException(nameof(ChildDpiAwareness));
+        }
+        control.RecreateContent();
+    }
+
     public nint WindowHandle => _content?.WindowHandle ?? 0;
     /// <summary>The control-owned surface, or null before content is loaded. Do not dispose or reparent it.</summary>
     public INativeHwndSurface? Surface => _host?.Surface;
@@ -119,7 +153,17 @@ public unsafe class NativeHwndHost : Control
             ReleaseContent();
             LastError = null;
             HWND parent = (HWND)Win32Interop.GetWindowFromWindowId(XamlRoot.ContentIslandEnvironment.AppWindowId);
-            _content = CreateContent((nint)parent.Value);
+            var requestedContext = DpiThreadScope.GetContext(ChildDpiAwareness);
+            if (ChildDpiAwareness != NativeDpiAwareness.Inherit &&
+                !PInvoke.AreDpiAwarenessContextsEqual(requestedContext, PInvoke.GetWindowDpiAwarenessContext(parent)) &&
+                PInvoke.GetWindowDpiHostingBehavior(parent) != Windows.Win32.UI.HiDpi.DPI_HOSTING_BEHAVIOR.DPI_HOSTING_BEHAVIOR_MIXED)
+            {
+                throw new InvalidOperationException("Create the parent HWND inside DpiThreadScope.MixedHosting() before requesting a different child DPI awareness.");
+            }
+            using (DpiThreadScope.Awareness(ChildDpiAwareness))
+            {
+                _content = CreateContent((nint)parent.Value);
+            }
             if (_content is null)
             {
                 return;
@@ -133,6 +177,11 @@ public unsafe class NativeHwndHost : Control
             if (ownerThread != PInvoke.GetCurrentThreadId())
             {
                 throw new ArgumentException("Hosted content must belong to the WinUI UI thread.");
+            }
+            if (ChildDpiAwareness != NativeDpiAwareness.Inherit &&
+                !PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext(child), requestedContext))
+            {
+                throw new InvalidOperationException($"The content HWND did not preserve the requested {ChildDpiAwareness} DPI awareness.");
             }
             int style = PInvoke.GetWindowLong(child, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
             if ((style & (int)WINDOW_STYLE.WS_CHILD) == 0)
@@ -155,7 +204,7 @@ public unsafe class NativeHwndHost : Control
             }
             ApplyAlpha();
             ApplyEnabled();
-            _host = new HwndVisualHost(this, _content.WindowHandle);
+            _host = new HwndVisualHost(this, _content.WindowHandle, DpiScalingMode);
             _host.CloakMode = CloakMode;
             _host.ClipMode = ClipMode;
             _host.StateChanged += OnStateChanged;
@@ -182,7 +231,7 @@ public unsafe class NativeHwndHost : Control
         {
             throw new ArgumentOutOfRangeException(nameof(NativeAlpha), "Alpha must be in the range 0-255.");
         }
-        if (!Enum.IsDefined(control.CloakMode) || !Enum.IsDefined(control.ClipMode))
+        if (!Enum.IsDefined(control.CloakMode) || !Enum.IsDefined(control.ClipMode) || !Enum.IsDefined(control.DpiScalingMode))
         {
             throw new ArgumentOutOfRangeException(nameof(args), "Unknown HWND hosting mode.");
         }
@@ -191,6 +240,7 @@ public unsafe class NativeHwndHost : Control
         {
             control._host.CloakMode = control.CloakMode;
             control._host.ClipMode = control.ClipMode;
+            control._host.DpiScalingMode = control.DpiScalingMode;
         }
         control.StateChanged?.Invoke(control, EventArgs.Empty);
     }

@@ -13,3 +13,8 @@ var host = new WinFormsHwndHost { Child = new System.Windows.Forms.TextBox() };
 - Tab/Shift+Tab stop at the first/last tab stop (no wrap) and return focus to XAML.
 - Not supported: `Application.Idle`/message filters, wheel chaining, Form features (AcceptButton, menus), per-monitor DPI re-scaling.
 - UI thread only.
+
+The inherited core `ChildDpiAwareness` and `DpiScalingMode` options are opt-in.
+See the core README for parent mixed-hosting prerequisites and clipping limits.
+These options do not retrofit existing managed HWNDs or implement WinForms DPI
+layout; non-default awareness with WinForms content requires separate validation.

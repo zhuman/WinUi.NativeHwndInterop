@@ -28,23 +28,23 @@ public sealed partial class MixedDpiPage : Page
         panel.Children.Add(new TextBlock { Text = "Mixed-mode DPI HWND experiment", FontSize = 24 });
         panel.Children.Add(new TextBlock
         {
-            Text = "The WinUI parent is created with MIXED hosting; each child is created under its own thread DPI context, then the thread is restored. Change display scale in Settings while this page is open. Unaware stays at 96 DPI, system-aware at system DPI, and PMv2 follows the monitor. Compare native and redirected views using the white 96-DIP and orange XAML rulers. At 200%, the raw unaware visual is half-sized; enable experimental compensation to match native size and input. This correction is sample-only. Regions start disabled to isolate DPI behavior; offscreen HWNDs can still intercept input in this diagnostic mode.",
+            Text = "The WinUI parent is created with MIXED hosting; each child is created under its own thread DPI context, then the thread is restored. Change display scale in Settings while this page is open. Unaware stays at 96 DPI, system-aware at system DPI, and PMv2 follows the monitor. Compare native and redirected views using the white 96-DIP and orange XAML rulers. At 200%, the raw unaware visual is half-sized; enable experimental compensation to match native size and input. Compensation uses the opt-in core library API. Regions start disabled to isolate DPI behavior; offscreen HWNDs can still intercept input in this diagnostic mode.",
             TextWrapping = TextWrapping.Wrap,
         });
         panel.Children.Add(_mode);
         panel.Children.Add(_clip);
         panel.Children.Add(_compensate);
         panel.Children.Add(_error);
-        AddSample(panel, "Unaware", DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_UNAWARE);
-        AddSample(panel, "System aware", DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
-        AddSample(panel, "PerMonitorV2", DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        AddSample(panel, "Unaware", NativeDpiAwareness.Unaware);
+        AddSample(panel, "System aware", NativeDpiAwareness.SystemAware);
+        AddSample(panel, "PerMonitorV2", NativeDpiAwareness.PerMonitorV2);
         _mode.SelectionChanged += (_, _) => ApplyOptions();
         _clip.Click += (_, _) => ApplyOptions();
         _compensate.Click += (_, _) => ApplyOptions();
         Content = new ScrollViewer { Content = panel };
     }
 
-    private void AddSample(StackPanel panel, string label, DPI_AWARENESS_CONTEXT context)
+    private void AddSample(StackPanel panel, string label, NativeDpiAwareness awareness)
     {
         panel.Children.Add(new TextBlock { Text = label, FontSize = 20 });
         var diagnostics = new TextBlock { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
@@ -54,22 +54,10 @@ public sealed partial class MixedDpiPage : Page
             Height = 190,
             HorizontalAlignment = HorizontalAlignment.Left,
             ClipMode = HwndClipMode.None,
+            ChildDpiAwareness = awareness,
             ChildWindowFactory = parent =>
             {
-                if (PInvoke.GetWindowDpiHostingBehavior((HWND)parent) != DPI_HOSTING_BEHAVIOR.DPI_HOSTING_BEHAVIOR_MIXED)
-                {
-                    throw new InvalidOperationException("The top-level HWND was not created with MIXED DPI hosting.");
-                }
-                SampleChildWindow child;
-                using (DpiThreadScope.Awareness(context))
-                {
-                    child = new SampleChildWindow((HWND)parent, label);
-                }
-                if (!PInvoke.AreDpiAwarenessContextsEqual(PInvoke.GetWindowDpiAwarenessContext(child.Handle), context))
-                {
-                    child.Dispose();
-                    throw new InvalidOperationException($"{label}: Windows did not preserve the requested child DPI context.");
-                }
+                var child = new SampleChildWindow((HWND)parent, label);
                 return new NativeWindowContent(child.NativeHandle, child.Dispose);
             },
         };
@@ -84,7 +72,7 @@ public sealed partial class MixedDpiPage : Page
                 throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastPInvokeError());
             }
             RECT logical;
-            using (DpiThreadScope.Awareness(PInvoke.GetWindowDpiAwarenessContext(hwnd)))
+            using (DpiThreadScope.AwarenessForWindow(host.WindowHandle))
             {
                 if (!PInvoke.GetClientRect(hwnd, out logical))
                 {
@@ -95,6 +83,7 @@ public sealed partial class MixedDpiPage : Page
             diagnostics.Text = $"{label}: HWND 0x{host.WindowHandle:X}, DPI {PInvoke.GetDpiForWindow(hwnd)}, " +
                 $"logical client {logical.Width}x{logical.Height}, physical window {physical.Width}x{physical.Height}; " +
                 $"XAML scale {host.XamlRoot.RasterizationScale:F2}, expected {host.Placement.Bounds.Width}x{host.Placement.Bounds.Height}px; " +
+                $"native scale factor {host.Surface!.NativeScaleFactor:F2}; " +
                 $"UI thread PMv2 restored: {restored}, hosting: {PInvoke.GetThreadDpiHostingBehavior()}";
         };
         _hosts.Add(host);
@@ -123,24 +112,11 @@ public sealed partial class MixedDpiPage : Page
         if (host.NativeAlpha != alpha) host.NativeAlpha = alpha;
         if (host.CloakMode != cloak) host.CloakMode = cloak;
         if (host.ClipMode != clip) host.ClipMode = clip;
+        var scaling = _compensate.IsChecked == true ? HwndDpiScalingMode.MatchNativeWindow : HwndDpiScalingMode.None;
+        if (host.DpiScalingMode != scaling) host.DpiScalingMode = scaling;
         if (host.Surface is { } surface)
         {
-            // Redirection exposes child backing pixels, not Windows' DPI-scaled native image.
-            double factor = 1;
-            if (_compensate.IsChecked == true)
-            {
-                uint childDpi = PInvoke.GetDpiForWindow((HWND)host.WindowHandle);
-                uint parentDpi = PInvoke.GetDpiForWindow((HWND)Microsoft.UI.Win32Interop.GetWindowFromWindowId(host.XamlRoot.ContentIslandEnvironment.AppWindowId));
-                if (childDpi == 0 || parentDpi == 0)
-                {
-                    throw new InvalidOperationException("Could not query parent/child DPI for the experiment.");
-                }
-                factor = (double)parentDpi / childDpi;
-            }
-            var visual = surface.PlacementVisual;
-            visual.Opacity = _mode.SelectedIndex == 1 ? 0 : 1;
-            visual.Scale = new System.Numerics.Vector3((float)(factor / host.Placement.Scale), (float)(factor / host.Placement.Scale), 1);
-            visual.Size = new System.Numerics.Vector2((float)(host.Placement.Bounds.Width / factor), (float)(host.Placement.Bounds.Height / factor));
+            surface.PlacementVisual.Opacity = _mode.SelectedIndex == 1 ? 0 : 1;
         }
     }
 }

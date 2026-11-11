@@ -8,6 +8,9 @@ public interface INativeHwndSurface : IDisposable
 {
     nint WindowHandle { get; }
     Visual PlacementVisual { get; }
+    /// <summary>Current parent-DPI/child-DPI ratio from backing pixels to native displayed pixels.
+    /// Query again after DPI changes. Does not modify PlacementVisual.</summary>
+    double NativeScaleFactor { get; }
 }
 
 /// <summary>Keyboard messages are offered before TranslateMessage/DispatchMessage on the hosting UI thread.</summary>
